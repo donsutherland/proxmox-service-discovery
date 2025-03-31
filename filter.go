@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"net/netip"
 	"regexp"
 	"slices"
 
@@ -13,6 +15,8 @@ var (
 	filterIncludeTagsRe = pflag.StringArray("filter-include-tags-re", nil, "if specified, only include resources with tags matching these regexes")
 	filterExcludeTags   = pflag.StringArray("filter-exclude-tags", nil, "if specified, exclude resources with these tags (takes priority over includes)")
 	filterExcludeTagsRe = pflag.StringArray("filter-exclude-tags-re", nil, "if specified, exclude resources with tags matching these regexes (takes priority over includes)")
+	filterIncludeCIDRs  = pflag.StringArray("filter-include-cidrs", nil, "if specified, only include resources with IP addresses in these CIDRs")
+	filterExcludeCIDRs  = pflag.StringArray("filter-exclude-cidrs", nil, "if specified, exclude resources with IP addresses in these CIDRs (takes priority over includes)")
 )
 
 // FilterConfig holds the configuration for filtering resources.
@@ -36,17 +40,44 @@ type FilterConfig struct {
 	// Resources with any tag matching any regex are excluded.
 	// This takes priority over inclusion.
 	ExcludeTagsRe []*regexp.Regexp
+
+	// IncludeCIDRs are the network CIDRs that resources must have an IP in to be included.
+	// If empty, all resources are included (unless excluded).
+	IncludeCIDRs []netip.Prefix
+
+	// ExcludeCIDRs are the network CIDRs that will cause resources to be excluded.
+	// This takes priority over inclusion.
+	ExcludeCIDRs []netip.Prefix
 }
 
 // NewFilterConfigFromFlags creates a filter configuration from the global command line flags.
-func NewFilterConfigFromFlags() *FilterConfig {
-	return &FilterConfig{
-		Type:         *filterType,
-		IncludeTags:  *filterIncludeTags,
+func NewFilterConfigFromFlags() (*FilterConfig, error) {
+	fc := &FilterConfig{
+		Type:          *filterType,
+		IncludeTags:   *filterIncludeTags,
 		IncludeTagsRe: parsedIncludeTagsRe,
-		ExcludeTags:  *filterExcludeTags,
+		ExcludeTags:   *filterExcludeTags,
 		ExcludeTagsRe: parsedExcludeTagsRe,
 	}
+
+	// Parse CIDRs
+	for _, cidr := range *filterIncludeCIDRs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid include CIDR %q: %w", cidr, err)
+		}
+		fc.IncludeCIDRs = append(fc.IncludeCIDRs, prefix)
+	}
+
+	for _, cidr := range *filterExcludeCIDRs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid exclude CIDR %q: %w", cidr, err)
+		}
+		fc.ExcludeCIDRs = append(fc.ExcludeCIDRs, prefix)
+	}
+
+	return fc, nil
 }
 
 // FilterResources filters a list of inventory items according to the filter configuration.
@@ -63,6 +94,14 @@ func (fc *FilterConfig) FilterResources(inventory []pveInventoryItem) []pveInven
 			continue
 		}
 		if fc.shouldExcludeResourceByTags(item) {
+			continue
+		}
+
+		// Filter by CIDRs
+		if !fc.shouldIncludeResourceByCIDRs(item) {
+			continue
+		}
+		if fc.shouldExcludeResourceByCIDRs(item) {
 			continue
 		}
 
@@ -127,10 +166,51 @@ func (fc *FilterConfig) shouldExcludeResourceByTags(item pveInventoryItem) bool 
 	return false
 }
 
-// filterResources filters resources using the global flags configuration.
-// This is a wrapper around the FilterConfig.FilterResources method to maintain
-// backward compatibility.
-func filterResources(inventory []pveInventoryItem) []pveInventoryItem {
-	fc := NewFilterConfigFromFlags()
-	return fc.FilterResources(inventory)
+// shouldIncludeResourceByCIDRs determines if a resource should be included based on CIDRs.
+func (fc *FilterConfig) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool {
+	// If there are no include CIDRs, include everything.
+	if len(fc.IncludeCIDRs) == 0 {
+		return true
+	}
+
+	// If the resource has no IP addresses, don't include it when filtering by CIDR.
+	if len(item.Addrs) == 0 {
+		return false
+	}
+
+	// If there are include CIDRs, include only if the item has at least one
+	// IP address within any of the CIDRs.
+	for _, ip := range item.Addrs {
+		for _, cidr := range fc.IncludeCIDRs {
+			if cidr.Contains(ip) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// shouldExcludeResourceByCIDRs determines if a resource should be excluded based on CIDRs.
+func (fc *FilterConfig) shouldExcludeResourceByCIDRs(item pveInventoryItem) bool {
+	// If there are no exclude CIDRs, don't exclude anything.
+	if len(fc.ExcludeCIDRs) == 0 {
+		return false
+	}
+
+	// If the resource has no IP addresses, don't exclude it when filtering by CIDR.
+	if len(item.Addrs) == 0 {
+		return false
+	}
+
+	// If there are exclude CIDRs, exclude if the item has any IP address
+	// within any of the CIDRs.
+	for _, ip := range item.Addrs {
+		for _, cidr := range fc.ExcludeCIDRs {
+			if cidr.Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
 }

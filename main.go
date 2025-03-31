@@ -118,7 +118,10 @@ func main() {
 		authUpdateCancel()
 	})
 
-	server := newServer(*proxmoxHost, *dnsZone, auth)
+	server, err := newServer(*proxmoxHost, *dnsZone, auth)
+	if err != nil {
+		pvelog.Fatal(logger, "error creating server", pvelog.Error(err))
+	}
 
 	// Create the DNS server.
 	const shutdownTimeout = 5 * time.Second
@@ -182,8 +185,7 @@ func main() {
 	logger.Info("proxmox-service-discovery starting")
 	defer logger.Info("proxmox-service-discovery finished")
 
-	err := rg.Run()
-	if err != nil {
+	if err := rg.Run(); err != nil {
 		var signalErr run.SignalError
 		if errors.As(err, &signalErr) {
 			logger.Info("got signal", "signal", signalErr.Signal)
@@ -200,6 +202,7 @@ type server struct {
 	dnsZone string // with trailing dot
 	auth    proxmoxAuthProvider
 	client  proxmoxClient
+	fc      *FilterConfig
 
 	dnsMux *dns.ServeMux // immutable
 
@@ -209,9 +212,14 @@ type server struct {
 }
 
 // newServer creates a new server instance with the given configuration
-func newServer(host, dnsZone string, auth proxmoxAuthProvider) *server {
+func newServer(host, dnsZone string, auth proxmoxAuthProvider) (*server, error) {
 	if !strings.HasSuffix(dnsZone, ".") {
 		dnsZone += "."
+	}
+
+	fc, err := NewFilterConfigFromFlags()
+	if err != nil {
+		return nil, fmt.Errorf("creating filter config: %w", err)
 	}
 
 	s := &server{
@@ -219,10 +227,11 @@ func newServer(host, dnsZone string, auth proxmoxAuthProvider) *server {
 		dnsZone: dnsZone,
 		auth:    auth,
 		client:  newDefaultProxmoxClient(host, auth),
+		fc:      fc,
 		dnsMux:  dns.NewServeMux(),
 	}
 	s.dnsMux.HandleFunc(dnsZone, s.handleDNSRequest)
-	return s
+	return s, nil
 }
 
 type record struct {
@@ -239,8 +248,7 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 	}
 
 	// Filter the inventory to only include resources we care about.
-	filterConfig := NewFilterConfigFromFlags()
-	filtered := filterConfig.FilterResources(inventory.Resources)
+	filtered := s.fc.FilterResources(inventory.Resources)
 
 	// Create the DNS record map.
 	records := make(map[string]record)

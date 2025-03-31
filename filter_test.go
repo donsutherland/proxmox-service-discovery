@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/netip"
 	"regexp"
 	"testing"
 )
@@ -12,20 +13,36 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 			Name: "vm1",
 			Type: pveItemTypeQEMU,
 			Tags: []string{"prod", "web"},
+			Addrs: []netip.Addr{
+				netip.MustParseAddr("192.168.1.10"),
+				netip.MustParseAddr("2001:db8::1"),
+			},
 		},
 		{
 			Name: "vm2",
 			Type: pveItemTypeLXC,
 			Tags: []string{"prod", "db"},
+			Addrs: []netip.Addr{
+				netip.MustParseAddr("192.168.1.20"),
+			},
 		},
 		{
 			Name: "vm3",
 			Type: pveItemTypeQEMU,
 			Tags: []string{"dev", "web"},
+			Addrs: []netip.Addr{
+				netip.MustParseAddr("10.0.0.5"),
+			},
+		},
+		{
+			Name:  "vm4",
+			Type:  pveItemTypeQEMU,
+			Tags:  []string{"test"},
+			Addrs: []netip.Addr{}, // No IP addresses
 		},
 	}
 
-	// Test filtering by type
+	// Test filtering
 	tests := []struct {
 		name   string
 		config FilterConfig
@@ -36,7 +53,7 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 			config: FilterConfig{
 				Type: "QEMU",
 			},
-			want: []string{"vm1", "vm3"},
+			want: []string{"vm1", "vm3", "vm4"},
 		},
 		{
 			name: "filter by type LXC",
@@ -48,7 +65,7 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 		{
 			name:   "no type filter",
 			config: FilterConfig{},
-			want:   []string{"vm1", "vm2", "vm3"},
+			want:   []string{"vm1", "vm2", "vm3", "vm4"},
 		},
 		{
 			name: "include tag prod",
@@ -76,14 +93,14 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 			config: FilterConfig{
 				ExcludeTags: []string{"dev"},
 			},
-			want: []string{"vm1", "vm2"},
+			want: []string{"vm1", "vm2", "vm4"},
 		},
 		{
 			name: "exclude multiple tags",
 			config: FilterConfig{
 				ExcludeTags: []string{"dev", "db"},
 			},
-			want: []string{"vm1"},
+			want: []string{"vm1", "vm4"},
 		},
 		{
 			name: "include and exclude tags (exclude has priority)",
@@ -105,7 +122,79 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 			config: FilterConfig{
 				ExcludeTagsRe: []*regexp.Regexp{regexp.MustCompile(".*d$")},
 			},
-			want: []string{"vm3"}, // Only vm3 doesn't have tags ending with 'd'
+			want: []string{"vm3", "vm4"}, // Only vm3/4 don't't have tags ending with 'd'
+		},
+		{
+			name: "include CIDR 192.168.1.0/24",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			want: []string{"vm1", "vm2"},
+		},
+		{
+			name: "include CIDR 10.0.0.0/8",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+			},
+			want: []string{"vm3"},
+		},
+		{
+			name: "include multiple CIDRs",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{
+					netip.MustParsePrefix("192.168.1.0/24"),
+					netip.MustParsePrefix("10.0.0.0/8"),
+				},
+			},
+			want: []string{"vm1", "vm2", "vm3"},
+		},
+		{
+			name: "include IPv6 CIDR",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+			},
+			want: []string{"vm1"},
+		},
+		{
+			name: "exclude CIDR 192.168.1.0/24",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			want: []string{"vm3", "vm4"}, // vm4 has no IPs, so it's not excluded
+		},
+		{
+			name: "exclude CIDR 10.0.0.0/8",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+			},
+			want: []string{"vm1", "vm2", "vm4"},
+		},
+		{
+			name: "exclude multiple CIDRs",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{
+					netip.MustParsePrefix("192.168.1.0/24"),
+					netip.MustParsePrefix("10.0.0.0/8"),
+				},
+			},
+			want: []string{"vm4"}, // Only vm4 has no IP in the excluded CIDRs
+		},
+		{
+			name: "include and exclude CIDRs (exclude has priority)",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/28")},
+			},
+			want: []string{"vm2"}, // vm1 is excluded as 192.168.1.10 is in 192.168.1.0/28
+		},
+		{
+			name: "complex filter with type, tags, and CIDRs",
+			config: FilterConfig{
+				Type:         "QEMU",
+				IncludeTags:  []string{"web"},
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+			},
+			want: []string{"vm1"}, // vm1 matches all criteria
 		},
 	}
 
@@ -285,6 +374,192 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 			got := tt.config.shouldExcludeResourceByTags(tt.item)
 			if got != tt.want {
 				t.Errorf("shouldExcludeResourceByTags() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterConfig_ShouldIncludeResourceByCIDRs(t *testing.T) {
+	tests := []struct {
+		name   string
+		config FilterConfig
+		item   pveInventoryItem
+		want   bool
+	}{
+		{
+			name:   "no include filters - should include",
+			config: FilterConfig{},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: true,
+		},
+		{
+			name: "has IP in CIDR",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: true,
+		},
+		{
+			name: "has IP in one of multiple CIDRs",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{
+					netip.MustParsePrefix("10.0.0.0/8"),
+					netip.MustParsePrefix("192.168.1.0/24"),
+				},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: true,
+		},
+		{
+			name: "has multiple IPs, one in CIDR",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{
+					netip.MustParseAddr("10.0.0.5"),
+					netip.MustParseAddr("192.168.1.10"),
+				},
+			},
+			want: true,
+		},
+		{
+			name: "IP not in CIDR",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: false,
+		},
+		{
+			name: "has IPv6 in CIDR",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("2001:db8::1")},
+			},
+			want: true,
+		},
+		{
+			name: "empty IP addresses",
+			config: FilterConfig{
+				IncludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.shouldIncludeResourceByCIDRs(tt.item)
+			if got != tt.want {
+				t.Errorf("shouldIncludeResourceByCIDRs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterConfig_ShouldExcludeResourceByCIDRs(t *testing.T) {
+	tests := []struct {
+		name   string
+		config FilterConfig
+		item   pveInventoryItem
+		want   bool
+	}{
+		{
+			name:   "no exclude filters - should not exclude",
+			config: FilterConfig{},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: false,
+		},
+		{
+			name: "has IP in excluded CIDR",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: true,
+		},
+		{
+			name: "has IP in one of multiple excluded CIDRs",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{
+					netip.MustParsePrefix("10.0.0.0/8"),
+					netip.MustParsePrefix("192.168.1.0/24"),
+				},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: true,
+		},
+		{
+			name: "has multiple IPs, one in excluded CIDR",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{
+					netip.MustParseAddr("10.0.0.5"),
+					netip.MustParseAddr("192.168.1.10"),
+				},
+			},
+			want: true,
+		},
+		{
+			name: "IP not in excluded CIDR",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.10")},
+			},
+			want: false,
+		},
+		{
+			name: "has IPv6 in excluded CIDR",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{netip.MustParseAddr("2001:db8::1")},
+			},
+			want: true,
+		},
+		{
+			name: "empty IP addresses",
+			config: FilterConfig{
+				ExcludeCIDRs: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			},
+			item: pveInventoryItem{
+				Addrs: []netip.Addr{},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.shouldExcludeResourceByCIDRs(tt.item)
+			if got != tt.want {
+				t.Errorf("shouldExcludeResourceByCIDRs() = %v, want %v", got, tt.want)
 			}
 		})
 	}
