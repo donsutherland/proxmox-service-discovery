@@ -8,8 +8,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
 	"github.com/creachadair/taskgroup"
+
+	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
 )
 
 // pveInventory is a summary of the state of the Proxmox cluster.
@@ -296,6 +297,10 @@ func (s *server) fetchLXCAddrs(ctx context.Context, node string, vmID int) ([]ne
 	}
 	if isDHCP {
 		logger.Debug("LXC guest is using DHCP")
+	}
+	if hwAddr == "" {
+		logger.Warn("no hardware address found for LXC guest, returning all IP addresses",
+			slog.String("net0", conf.Net0))
 	}
 
 	// Fetch and return all non-localhost IP addresses from the LXC guest, if any.

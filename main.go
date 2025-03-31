@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,13 +30,6 @@ var (
 	addr = pflag.StringP("addr", "a", ":53", "address to listen on for DNS")
 	udp  = pflag.Bool("udp", true, "enable UDP listener")
 	tcp  = pflag.Bool("tcp", true, "enable TCP listener")
-
-	// Filtering
-	filterType          = pflag.String("filter-type", "", "filter resources by type (e.g. 'qemu' or 'lxc')")
-	filterIncludeTags   = pflag.StringArray("filter-include-tags", nil, "if specified, only include resources with these tags")
-	filterIncludeTagsRe = pflag.StringArray("filter-include-tags-re", nil, "if specified, only include resources with tags matching these regexes")
-	filterExcludeTags   = pflag.StringArray("filter-exclude-tags", nil, "if specified, exclude resources with these tags (takes priority over includes)")
-	filterExcludeTagsRe = pflag.StringArray("filter-exclude-tags-re", nil, "if specified, exclude resources with tags matching these regexes (takes priority over includes)")
 
 	// One of these must be set
 	proxmoxPassword    = pflag.StringP("proxmox-password", "p", "", "Proxmox password to connect with")
@@ -247,7 +239,8 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 	}
 
 	// Filter the inventory to only include resources we care about.
-	filtered := filterResources(inventory.Resources)
+	filterConfig := NewFilterConfigFromFlags()
+	filtered := filterConfig.FilterResources(inventory.Resources)
 
 	// Create the DNS record map.
 	records := make(map[string]record)
@@ -268,81 +261,6 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 	defer s.mu.Unlock()
 	s.records = records
 	return nil
-}
-
-func filterResources(inventory []pveInventoryItem) []pveInventoryItem {
-	var filtered []pveInventoryItem
-	for _, item := range inventory {
-		// Filter by type
-		if *filterType != "" && item.Type.String() != *filterType {
-			continue
-		}
-
-		// Filter by tags
-		if !shouldIncludeResourceByTags(item) {
-			continue
-		}
-		if shouldExcludeResourceByTags(item) {
-			continue
-		}
-
-		filtered = append(filtered, item)
-	}
-	return filtered
-}
-
-func shouldIncludeResourceByTags(item pveInventoryItem) bool {
-	// If there are no include tags, include everything.
-	if len(*filterIncludeTags) == 0 && len(parsedIncludeTagsRe) == 0 {
-		return true
-	}
-
-	// If there are include tags, include only if the item has at least one
-	// of them.
-	for _, tag := range *filterIncludeTags {
-		if slices.Contains(item.Tags, tag) {
-			return true
-		}
-	}
-
-	// If there are include tag regexes, include only if the item has at
-	// least one matching tag.
-	// TODO: non-O(n^2) implementation
-	for _, tagRe := range parsedIncludeTagsRe {
-		for _, tag := range item.Tags {
-			if tagRe.MatchString(tag) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-func shouldExcludeResourceByTags(item pveInventoryItem) bool {
-	// If there are no exclude tags, don't exclude anything.
-	if len(*filterExcludeTags) == 0 && len(parsedExcludeTagsRe) == 0 {
-		return false
-	}
-
-	// If there are exclude tags, exclude if the item has any of them.
-	for _, tag := range *filterExcludeTags {
-		if slices.Contains(item.Tags, tag) {
-			return true
-		}
-	}
-
-	// If there are exclude tag regexes, exclude if the item has any matching
-	// tags.
-	// TODO: non-O(n^2) implementation
-	for _, tagRe := range parsedExcludeTagsRe {
-		for _, tag := range item.Tags {
-			if tagRe.MatchString(tag) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
