@@ -25,10 +25,11 @@ import (
 )
 
 var (
-	proxmoxHost = pflag.StringP("proxmox-host", "h", "", "Proxmox host to connect to")
-	proxmoxUser = pflag.StringP("proxmox-user", "u", "root@pam", "Proxmox user to connect as")
-	dnsZone     = pflag.StringP("dns-zone", "z", "", "DNS zone to serve records for")
-	verbose     = pflag.BoolP("verbose", "v", false, "verbose output")
+	proxmoxHost  = pflag.StringP("proxmox-host", "h", "", "Proxmox host to connect to")
+	proxmoxUser  = pflag.StringP("proxmox-user", "u", "root@pam", "Proxmox user to connect as")
+	dnsZone      = pflag.StringP("dns-zone", "z", "", "DNS zone to serve records for")
+	verbose      = pflag.BoolP("verbose", "v", false, "verbose output")
+	logResponses = pflag.Bool("log-responses", false, "log all responses from Proxmox")
 
 	// DNS server configuration
 	addr = pflag.StringP("addr", "a", ":53", "address to listen on for DNS")
@@ -347,6 +348,13 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 				continue
 			}
 
+			// Get the IP address of the VM
+			addrs, err := s.fetchQEMUAddrs(ctx, node.Node, vm.VMID)
+			if err != nil {
+				return inventory, fmt.Errorf("fetching IP addresses for VM %q on %q: %w", vm.VMID, node.Node, err)
+			}
+			logger.Debug("fetched IP addresses for VM", "vm", vm.Name, "addrs", addrs)
+
 			inventory.Resources = append(inventory.Resources, pveInventoryItem{
 				Name: vm.Name,
 				ID:   vm.VMID,
@@ -370,6 +378,13 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 				continue
 			}
 
+			// Get the IP address of the VM
+			addrs, err := s.fetchLXCAddrs(ctx, node.Node, lxc.VMID)
+			if err != nil {
+				return inventory, fmt.Errorf("fetching IP addresses for LXC %q on %q: %w", lxc.VMID, node.Node, err)
+			}
+			logger.Debug("fetched IP addresses for LXC", "lxc", lxc.Name, "addrs", addrs)
+
 			inventory.Resources = append(inventory.Resources, pveInventoryItem{
 				Name: lxc.Name,
 				ID:   lxc.VMID,
@@ -386,6 +401,119 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 		"num_lxcs", numLXCs)
 
 	return inventory, nil
+}
+
+func (s *server) fetchQEMUAddrs(ctx context.Context, node string, vmID int) ([]netip.Addr, error) {
+	logger := logger.With("vm", vmID, "node", node)
+
+	// Start by seeing if we can find a static IP address in the QEMU config.
+	uri := fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/config", s.host, node, vmID)
+	conf, err := fetchFromProxmox[QEMUConfig](ctx, uri, s.auth)
+	if err != nil {
+		return nil, fmt.Errorf("fetching QEMU config for %q on %q: %w", vmID, node, err)
+	}
+
+	if addr, err := netip.ParseAddr(conf.IPConfig0); err == nil {
+		return []netip.Addr{addr}, nil
+	}
+
+	// Find the hardware address of the first network interface.
+	var hwAddr string
+	parts := strings.Split(conf.Net0, ",")
+	for _, part := range parts {
+		if suff, ok := strings.CutPrefix(part, "macaddr="); ok {
+			hwAddr = suff
+			break
+		}
+		if suff, ok := strings.CutPrefix(part, "virtio="); ok {
+			hwAddr = suff
+			break
+		}
+	}
+	if hwAddr == "" {
+		logger.Warn("no hardware address found for QEMU guest, returning all IP addresses",
+			slog.String("net0", conf.Net0))
+	}
+
+	// Otherwise, fetch and return all non-localhost IP addresses from the QEMU guest, if any.
+	uri = fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/agent/network-get-interfaces", s.host, node, vmID)
+	interfaces, err := fetchFromProxmox[AgentInterfacesResponse](ctx, uri, s.auth)
+	if err != nil {
+		return nil, fmt.Errorf("fetching QEMU guest interfaces for %q on %q: %w", vmID, node, err)
+	}
+	logger.Debug("fetched QEMU guest interfaces", "num_interfaces", len(interfaces.Result))
+
+	var addrs []netip.Addr
+	for _, iface := range interfaces.Result {
+		if iface.Name == "lo" {
+			continue
+		}
+
+		// If we have a hardware address, only include addresses for that interface.
+		if hwAddr != "" && iface.HardwareAddress != hwAddr {
+			continue
+		}
+
+		for _, addr := range iface.IPAddresses {
+			if addr.Type != "ipv4" && addr.Type != "ipv6" {
+				continue
+			}
+			ip, err := netip.ParseAddr(addr.Address)
+			if err != nil {
+				logger.Error("parsing IP address", "address", addr.Address, pvelog.Error(err))
+				continue
+			}
+			addrs = append(addrs, ip)
+		}
+	}
+	return addrs, nil
+}
+
+func (s *server) fetchLXCAddrs(ctx context.Context, node string, vmID int) ([]netip.Addr, error) {
+	logger := logger.With("lxc", vmID, "node", node)
+
+	// Fetch the LXC guest config to see if we can find a static IP address.
+	uri := fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/config", s.host, node, vmID)
+	conf, err := fetchFromProxmox[LXCConfig](ctx, uri, s.auth)
+	if err != nil {
+		return nil, fmt.Errorf("fetching LXC config for %q on %q: %w", vmID, node, err)
+	}
+	logger.Debug("fetched LXC config", "config", conf)
+
+	// TODO: extract IP if non-"dhcp"
+	// TODO: extract hardware address so we can look below
+
+	// Fetch and return all non-localhost IP addresses from the LXC guest, if any.
+	uri = fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/interfaces", s.host, node, vmID)
+	interfaces, err := fetchFromProxmox[[]LXCInterface](ctx, uri, s.auth)
+	if err != nil {
+		return nil, fmt.Errorf("fetching LXC guest interfaces for %q on %q: %w", vmID, node, err)
+	}
+	logger.Debug("fetched LXC guest interfaces", "num_interfaces", len(interfaces))
+
+	var addrs []netip.Addr
+	for _, iface := range interfaces {
+		if iface.Name == "lo" {
+			continue
+		}
+		if iface.Inet != "" {
+			pref, err := netip.ParsePrefix(iface.Inet)
+			if err != nil {
+				logger.Error("parsing IP prefix", "prefix", iface.Inet, pvelog.Error(err))
+				continue
+			}
+			addrs = append(addrs, pref.Addr())
+		}
+		if iface.Inet6 != "" {
+			pref, err := netip.ParsePrefix(iface.Inet6)
+			if err != nil {
+				logger.Error("parsing IPv6 prefix", "prefix", iface.Inet6, pvelog.Error(err))
+				continue
+			}
+			addrs = append(addrs, pref.Addr())
+		}
+	}
+	return addrs, nil
 }
 
 func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {

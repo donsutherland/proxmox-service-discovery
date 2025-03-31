@@ -34,6 +34,50 @@ type QEMU struct {
 	Name   string `json:"name"`
 }
 
+// QEMUConfig is the API response for the configuration of a Proxmox QEMU VM from
+// the Proxmox API /api2/json/nodes/<node>/qemu/<vmid>/config endpoint.
+type QEMUConfig struct {
+	Net0      string `json:"net0"`
+	IPConfig0 string `json:"ipconfig0"`
+}
+
+// AgentInterfacesResponse is the API response for the agent interface of a Proxmox QEMU VM
+// from the Proxmox API /api2/json/nodes/<node>/qemu/<vmid>/agent/network-get-interfaces endpoint.
+type AgentInterfacesResponse struct {
+	Result []AgentInterface `json:"result"`
+}
+
+// AgentInterface is the API response for a single agent interface of a Proxmox QEMU VM
+// from the Proxmox API /api2/json/nodes/<node>/qemu/<vmid>/agent/network-get-interfaces endpoint.
+type AgentInterface struct {
+	Name            string                  `json:"name"`
+	HardwareAddress string                  `json:"hardware-address"`
+	IPAddresses     []AgentInterfaceAddress `json:"ip-addresses"`
+}
+
+// AgentInterfaceAddress is the API response for a single IP address of a Proxmox QEMU VM
+// from the Proxmox API /api2/json/nodes/<node>/qemu/<vmid>/agent/network-get-interfaces endpoint.
+type AgentInterfaceAddress struct {
+	Type    string `json:"ip-address-type"`
+	Address string `json:"ip-address"`
+	Prefix  int    `json:"prefix"`
+}
+
+// LXCInterface is the API response for a single interface of a Proxmox LXC container
+// from the Proxmox API /api2/json/nodes/<node>/lxc/<vmid>/interfaces endpoint.
+type LXCInterface struct {
+	Name            string `json:"name"`
+	HardwareAddress string `json:"hwaddr"`
+	Inet            string `json:"inet"`
+	Inet6           string `json:"inet6"`
+}
+
+// LXCConfig is the API response for the configuration of a Proxmox LXC container
+// from the Proxmox API /api2/json/nodes/<node>/lxc/<vmid>/config endpoint.
+type LXCConfig struct {
+	Net0 string `json:"net0"`
+}
+
 func fetchFromProxmox[T any](ctx context.Context, uri string, auth proxmoxAuthProvider) (T, error) {
 	var zero T
 
@@ -54,7 +98,7 @@ func fetchFromProxmox[T any](ctx context.Context, uri string, auth proxmoxAuthPr
 	}
 
 	var reader io.Reader = resp.Body
-	if *verbose && false {
+	if *logResponses {
 		var buf bytes.Buffer
 		reader = io.TeeReader(resp.Body, &buf)
 
