@@ -10,24 +10,14 @@ import (
 	"net/http"
 )
 
-// ProxmoxNodesResponse is the response from the Proxmox API /api/json2/nodes
-// endpoint.
-type ProxmoxNodesResponse struct {
-	Data []Node `json:"data"`
-}
-
-// Node is the API response for a single Proxmox node.
+// Node is the API response for a single Proxmox node from the Proxmox API
+// /api/json2/nodes endpoint.
 type Node struct {
 	Node string `json:"node"`
 }
 
-// ProxmoxLXCResponse is the response from the Proxmox API /api/json2/nodes/<node>/lxc
-// endpoint.
-type ProxmoxLXCResponse struct {
-	Data []LXC `json:"data"`
-}
-
-// LXC is the API response for a single Proxmox LXC container.
+// LXC is the API response for a single Proxmox LXC container from the Proxmox
+// API /api/json2/nodes/<node>/lxc endpoint.
 type LXC struct {
 	VMID   int    `json:"vmid"`
 	Status string `json:"status"`
@@ -35,13 +25,8 @@ type LXC struct {
 	Name   string `json:"name"`
 }
 
-// ProxmoxQEMUResponse is the response from the Proxmox API /api/json2/nodes/<node>/qemu
-// endpoint.
-type ProxmoxQEMUResponse struct {
-	Data []QEMU `json:"data"`
-}
-
-// QEMU is the API response for a single Proxmox QEMU VM.
+// QEMU is the API response for a single Proxmox QEMU VM from the Proxmox API
+// /api/json2/nodes/<node>/qemu endpoint.
 type QEMU struct {
 	VMID   int    `json:"vmid"`
 	Status string `json:"status"`
@@ -82,10 +67,13 @@ func fetchFromProxmox[T any](ctx context.Context, uri string, auth proxmoxAuthPr
 		}()
 	}
 
-	var ret T
+	// All data in Proxmox is returned under the "Data" key.
+	var ret struct {
+		Data T `json:"data"`
+	}
 	if err := json.NewDecoder(reader).Decode(&ret); err != nil {
 		return zero, fmt.Errorf("decoding response: %w", err)
 	}
 
-	return ret, nil
+	return ret.Data, nil
 }

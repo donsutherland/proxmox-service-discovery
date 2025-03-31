@@ -322,7 +322,7 @@ func shouldExcludeResourceByTags(item pveInventoryItem) bool {
 
 func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ error) {
 	// Start by fetching the list of nodes from the Proxmox API
-	nodes, err := fetchFromProxmox[ProxmoxNodesResponse](ctx, s.host+"/api2/json/nodes", s.auth)
+	nodes, err := fetchFromProxmox[[]Node](ctx, s.host+"/api2/json/nodes", s.auth)
 	if err != nil {
 		return inventory, fmt.Errorf("fetching nodes: %w", err)
 	}
@@ -332,16 +332,16 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 		numLXCs int
 		numVMs  int
 	)
-	for _, node := range nodes.Data {
+	for _, node := range nodes {
 		// Fetch the list of VMs
-		vms, err := fetchFromProxmox[ProxmoxQEMUResponse](ctx, s.host+"/api2/json/nodes/"+node.Node+"/qemu", s.auth)
+		vms, err := fetchFromProxmox[[]QEMU](ctx, s.host+"/api2/json/nodes/"+node.Node+"/qemu", s.auth)
 		if err != nil {
 			return inventory, fmt.Errorf("fetching VMs for node %q: %w", node.Node, err)
 		}
-		numVMs += len(vms.Data)
+		numVMs += len(vms)
 
 		// Add the VMs to the inventory
-		for _, vm := range vms.Data {
+		for _, vm := range vms {
 			// Skip VMs that are not running
 			if vm.Status != "running" {
 				continue
@@ -357,14 +357,14 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 		}
 
 		// Fetch the list of LXCs
-		lxcs, err := fetchFromProxmox[ProxmoxLXCResponse](ctx, s.host+"/api2/json/nodes/"+node.Node+"/lxc", s.auth)
+		lxcs, err := fetchFromProxmox[[]LXC](ctx, s.host+"/api2/json/nodes/"+node.Node+"/lxc", s.auth)
 		if err != nil {
 			return inventory, fmt.Errorf("fetching LXCs for node %q: %w", node.Node, err)
 		}
-		numLXCs += len(lxcs.Data)
+		numLXCs += len(lxcs)
 
 		// Add the LXCs to the inventory
-		for _, lxc := range lxcs.Data {
+		for _, lxc := range lxcs {
 			// Skip LXCs that are not running
 			if lxc.Status != "running" {
 				continue
@@ -381,7 +381,7 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 	}
 
 	logger.Debug("fetched inventory from Proxmox",
-		"num_nodes", len(nodes.Data),
+		"num_nodes", len(nodes),
 		"num_vms", numVMs,
 		"num_lxcs", numLXCs)
 
