@@ -2,14 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/cookiejar"
 	"net/netip"
-	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -85,6 +81,8 @@ func main() {
 		}
 	}
 
+	var rg run.Group
+
 	var auth proxmoxAuthProvider
 	switch {
 	case *proxmoxTokenID != "" && *proxmoxTokenSecret == "":
@@ -109,6 +107,25 @@ func main() {
 		pvelog.Fatal(logger, "error authenticating with Proxmox", pvelog.Error(err))
 	}
 
+	// Periodically call the auth provider's update function.
+	authUpdateCtx, authUpdateCancel := context.WithCancel(ctx)
+	rg.Add(func() error {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-authUpdateCtx.Done():
+				return authUpdateCtx.Err()
+			case <-ticker.C:
+				if err := auth.Authenticate(authUpdateCtx); err != nil {
+					logger.Error("error updating Proxmox auth", pvelog.Error(err))
+				}
+			}
+		}
+	}, func(error) {
+		authUpdateCancel()
+	})
+
 	dnsMux := dns.NewServeMux()
 	server := &server{
 		host:    *proxmoxHost,
@@ -120,8 +137,6 @@ func main() {
 		server.dnsZone += "."
 	}
 	dnsMux.HandleFunc(server.dnsZone, server.handleDNSRequest)
-
-	var rg run.Group
 
 	// Create the DNS server.
 	const shutdownTimeout = 5 * time.Second
@@ -170,7 +185,7 @@ func main() {
 			case <-updateCtx.Done():
 				return nil
 			case <-ticker.C:
-				if err := server.updateDNSRecords(ctx); err != nil {
+				if err := server.updateDNSRecords(updateCtx); err != nil {
 					logger.Error("error updating DNS records", pvelog.Error(err))
 				}
 			}
@@ -230,13 +245,14 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 	records := make(map[string]record)
 	for _, item := range filtered {
 		fqdn := item.Name + "." + s.dnsZone
-		records[fqdn] = record{
+		rec := record{
 			FQDN: fqdn,
 			Type: dns.Type(dns.TypeA),
-			Answers: []netip.Addr{
-				netip.AddrFrom4([4]byte{192, 168, 1, 1}), // TODO real IP
-			},
 		}
+		for _, addr := range item.Addrs {
+			rec.Answers = append(rec.Answers, addr)
+		}
+		records[fqdn] = rec
 	}
 
 	// Update the DNS records
@@ -319,201 +335,6 @@ func shouldExcludeResourceByTags(item pveInventoryItem) bool {
 		}
 	}
 	return false
-}
-
-func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ error) {
-	// Start by fetching the list of nodes from the Proxmox API
-	nodes, err := fetchFromProxmox[[]Node](ctx, s.host+"/api2/json/nodes", s.auth)
-	if err != nil {
-		return inventory, fmt.Errorf("fetching nodes: %w", err)
-	}
-
-	// For each node, fetch VMs and LXCs.
-	var (
-		numLXCs int
-		numVMs  int
-	)
-	for _, node := range nodes {
-		// Fetch the list of VMs
-		vms, err := fetchFromProxmox[[]QEMU](ctx, s.host+"/api2/json/nodes/"+node.Node+"/qemu", s.auth)
-		if err != nil {
-			return inventory, fmt.Errorf("fetching VMs for node %q: %w", node.Node, err)
-		}
-		numVMs += len(vms)
-
-		// Add the VMs to the inventory
-		for _, vm := range vms {
-			// Skip VMs that are not running
-			if vm.Status != "running" {
-				continue
-			}
-
-			// Get the IP address of the VM
-			addrs, err := s.fetchQEMUAddrs(ctx, node.Node, vm.VMID)
-			if err != nil {
-				return inventory, fmt.Errorf("fetching IP addresses for VM %q on %q: %w", vm.VMID, node.Node, err)
-			}
-			logger.Debug("fetched IP addresses for VM", "vm", vm.Name, "addrs", addrs)
-
-			inventory.Resources = append(inventory.Resources, pveInventoryItem{
-				Name: vm.Name,
-				ID:   vm.VMID,
-				Node: node.Node,
-				Type: pveItemTypeQEMU,
-				Tags: strings.Split(vm.Tags, ";"),
-			})
-		}
-
-		// Fetch the list of LXCs
-		lxcs, err := fetchFromProxmox[[]LXC](ctx, s.host+"/api2/json/nodes/"+node.Node+"/lxc", s.auth)
-		if err != nil {
-			return inventory, fmt.Errorf("fetching LXCs for node %q: %w", node.Node, err)
-		}
-		numLXCs += len(lxcs)
-
-		// Add the LXCs to the inventory
-		for _, lxc := range lxcs {
-			// Skip LXCs that are not running
-			if lxc.Status != "running" {
-				continue
-			}
-
-			// Get the IP address of the VM
-			addrs, err := s.fetchLXCAddrs(ctx, node.Node, lxc.VMID)
-			if err != nil {
-				return inventory, fmt.Errorf("fetching IP addresses for LXC %q on %q: %w", lxc.VMID, node.Node, err)
-			}
-			logger.Debug("fetched IP addresses for LXC", "lxc", lxc.Name, "addrs", addrs)
-
-			inventory.Resources = append(inventory.Resources, pveInventoryItem{
-				Name: lxc.Name,
-				ID:   lxc.VMID,
-				Node: node.Node,
-				Type: pveItemTypeLXC,
-				Tags: strings.Split(lxc.Tags, ";"),
-			})
-		}
-	}
-
-	logger.Debug("fetched inventory from Proxmox",
-		"num_nodes", len(nodes),
-		"num_vms", numVMs,
-		"num_lxcs", numLXCs)
-
-	return inventory, nil
-}
-
-func (s *server) fetchQEMUAddrs(ctx context.Context, node string, vmID int) ([]netip.Addr, error) {
-	logger := logger.With("vm", vmID, "node", node)
-
-	// Start by seeing if we can find a static IP address in the QEMU config.
-	uri := fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/config", s.host, node, vmID)
-	conf, err := fetchFromProxmox[QEMUConfig](ctx, uri, s.auth)
-	if err != nil {
-		return nil, fmt.Errorf("fetching QEMU config for %q on %q: %w", vmID, node, err)
-	}
-
-	if addr, err := netip.ParseAddr(conf.IPConfig0); err == nil {
-		return []netip.Addr{addr}, nil
-	}
-
-	// Find the hardware address of the first network interface.
-	var hwAddr string
-	parts := strings.Split(conf.Net0, ",")
-	for _, part := range parts {
-		if suff, ok := strings.CutPrefix(part, "macaddr="); ok {
-			hwAddr = suff
-			break
-		}
-		if suff, ok := strings.CutPrefix(part, "virtio="); ok {
-			hwAddr = suff
-			break
-		}
-	}
-	if hwAddr == "" {
-		logger.Warn("no hardware address found for QEMU guest, returning all IP addresses",
-			slog.String("net0", conf.Net0))
-	}
-
-	// Otherwise, fetch and return all non-localhost IP addresses from the QEMU guest, if any.
-	uri = fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/agent/network-get-interfaces", s.host, node, vmID)
-	interfaces, err := fetchFromProxmox[AgentInterfacesResponse](ctx, uri, s.auth)
-	if err != nil {
-		return nil, fmt.Errorf("fetching QEMU guest interfaces for %q on %q: %w", vmID, node, err)
-	}
-	logger.Debug("fetched QEMU guest interfaces", "num_interfaces", len(interfaces.Result))
-
-	var addrs []netip.Addr
-	for _, iface := range interfaces.Result {
-		if iface.Name == "lo" {
-			continue
-		}
-
-		// If we have a hardware address, only include addresses for that interface.
-		if hwAddr != "" && iface.HardwareAddress != hwAddr {
-			continue
-		}
-
-		for _, addr := range iface.IPAddresses {
-			if addr.Type != "ipv4" && addr.Type != "ipv6" {
-				continue
-			}
-			ip, err := netip.ParseAddr(addr.Address)
-			if err != nil {
-				logger.Error("parsing IP address", "address", addr.Address, pvelog.Error(err))
-				continue
-			}
-			addrs = append(addrs, ip)
-		}
-	}
-	return addrs, nil
-}
-
-func (s *server) fetchLXCAddrs(ctx context.Context, node string, vmID int) ([]netip.Addr, error) {
-	logger := logger.With("lxc", vmID, "node", node)
-
-	// Fetch the LXC guest config to see if we can find a static IP address.
-	uri := fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/config", s.host, node, vmID)
-	conf, err := fetchFromProxmox[LXCConfig](ctx, uri, s.auth)
-	if err != nil {
-		return nil, fmt.Errorf("fetching LXC config for %q on %q: %w", vmID, node, err)
-	}
-	logger.Debug("fetched LXC config", "config", conf)
-
-	// TODO: extract IP if non-"dhcp"
-	// TODO: extract hardware address so we can look below
-
-	// Fetch and return all non-localhost IP addresses from the LXC guest, if any.
-	uri = fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/interfaces", s.host, node, vmID)
-	interfaces, err := fetchFromProxmox[[]LXCInterface](ctx, uri, s.auth)
-	if err != nil {
-		return nil, fmt.Errorf("fetching LXC guest interfaces for %q on %q: %w", vmID, node, err)
-	}
-	logger.Debug("fetched LXC guest interfaces", "num_interfaces", len(interfaces))
-
-	var addrs []netip.Addr
-	for _, iface := range interfaces {
-		if iface.Name == "lo" {
-			continue
-		}
-		if iface.Inet != "" {
-			pref, err := netip.ParsePrefix(iface.Inet)
-			if err != nil {
-				logger.Error("parsing IP prefix", "prefix", iface.Inet, pvelog.Error(err))
-				continue
-			}
-			addrs = append(addrs, pref.Addr())
-		}
-		if iface.Inet6 != "" {
-			pref, err := netip.ParsePrefix(iface.Inet6)
-			if err != nil {
-				logger.Error("parsing IPv6 prefix", "prefix", iface.Inet6, pvelog.Error(err))
-				continue
-			}
-			addrs = append(addrs, pref.Addr())
-		}
-	}
-	return addrs, nil
 }
 
 func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
@@ -601,157 +422,4 @@ func (s *server) dnsAAAARecordForLocked(name string) []dns.RR {
 		answers = append(answers, rr)
 	}
 	return answers
-}
-
-// pveInventory is a summary of the state of the Proxmox cluster.
-type pveInventory struct {
-	// NodeNames is the list of (host) node names in the cluster.
-	NodeNames []string
-	// Resources is the list of resources in the cluster.
-	Resources []pveInventoryItem
-}
-
-type pveInventoryItem struct {
-	// Name is the name of the resource.
-	Name string
-	// ID is the (numeric) ID of the resource.
-	ID int
-	// Node is the name of the node the resource is on.
-	Node string
-	// Type is the type of the resource.
-	Type pveItemType
-	// Tags are the tags associated with the resource.
-	// TODO: map[string]bool?
-	Tags []string
-}
-
-type pveItemType int
-
-const (
-	pveItemTypeUnknown pveItemType = iota
-	pveItemTypeLXC
-	pveItemTypeQEMU
-)
-
-func (t pveItemType) String() string {
-	switch t {
-	case pveItemTypeLXC:
-		return "LXC"
-	case pveItemTypeQEMU:
-		return "QEMU"
-	default:
-		return "unknown"
-	}
-}
-
-type proxmoxAuthProvider interface {
-	// Authenticate should be called at creation time and every hour to
-	// obtain a valid authentication ticket for the Proxmox API.
-	Authenticate(context.Context) error
-
-	// UpdateRequest should be called before making a request to the Proxmox
-	// API to ensure the request is authenticated.
-	UpdateRequest(r *http.Request)
-}
-
-type proxmoxAPITokenAuthProvider struct {
-	user    string
-	tokenID string
-	secret  string
-}
-
-func (a *proxmoxAPITokenAuthProvider) Authenticate(_ context.Context) error {
-	return nil // no authentication needed
-}
-
-func (a *proxmoxAPITokenAuthProvider) UpdateRequest(r *http.Request) {
-	token := fmt.Sprintf("%s!%s=%s", a.user, a.tokenID, a.secret)
-	r.Header.Set("Authorization", "PVEAPIToken="+token)
-}
-
-type proxmoxPasswordAuthProvider struct {
-	proxmoxBaseURL string // immutable; e.g. "https://proxmox.example.com:8006"
-	user           string // immutable; the user to authenticate as
-	password       string // immutable; the password to authenticate with
-
-	mu     sync.RWMutex
-	client *http.Client // the HTTP client to use; created on first use
-	ticket string       // the current authentication ticket
-	csrf   string       // the current CSRF token
-}
-
-func (a *proxmoxPasswordAuthProvider) getClient() (*http.Client, error) {
-	a.mu.RLock()
-	client := a.client
-	a.mu.RUnlock()
-
-	if client != nil {
-		return client, nil
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.client == nil {
-		jar, err := cookiejar.New(nil)
-		if err != nil {
-			return nil, fmt.Errorf("creating cookie jar: %w", err)
-		}
-		client = &http.Client{
-			Jar: jar,
-		}
-		a.client = client
-	}
-	return a.client, nil
-}
-
-func (a *proxmoxPasswordAuthProvider) Authenticate(ctx context.Context) error {
-	client, err := a.getClient()
-	if err != nil {
-		return err
-	}
-
-	uri := fmt.Sprintf("%s/api2/json/access/ticket", a.proxmoxBaseURL)
-
-	body := url.Values{
-		"username": {a.user},
-		"password": {a.password},
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", uri, strings.NewReader(body.Encode()))
-	if err != nil {
-		return fmt.Errorf("creating HTTP request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("sending authentication HTTP request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code %d", resp.StatusCode)
-	}
-
-	var data struct {
-		Data struct {
-			Ticket string `json:"ticket"`
-			CSRF   string `json:"CSRFPreventionToken"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return fmt.Errorf("decoding response: %w", err)
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.ticket = data.Data.Ticket
-	a.csrf = data.Data.CSRF
-	return nil
-}
-
-func (a *proxmoxPasswordAuthProvider) UpdateRequest(r *http.Request) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	r.Header.Set("CSRFPreventionToken", a.csrf)
-	r.Header.Set("Cookie", "PVEAuthCookie="+a.ticket)
 }
