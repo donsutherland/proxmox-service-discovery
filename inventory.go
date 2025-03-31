@@ -6,16 +6,26 @@ import (
 	"log/slog"
 	"net/netip"
 	"strings"
+	"sync"
 
 	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
+	"github.com/creachadair/taskgroup"
 )
 
 // pveInventory is a summary of the state of the Proxmox cluster.
 type pveInventory struct {
 	// NodeNames is the list of (host) node names in the cluster.
 	NodeNames []string
+	// NodeStats is a summary of the inventory about each node.
+	NodeStats map[string]nodeInventoryStats
 	// Resources is the list of resources in the cluster.
 	Resources []pveInventoryItem
+}
+
+// nodeInventoryStats is a summary of the inventory about a single node.
+type nodeInventoryStats struct {
+	NumVMs  int
+	NumLXCs int
 }
 
 type pveInventoryItem struct {
@@ -59,74 +69,42 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 	if err != nil {
 		return inventory, fmt.Errorf("fetching nodes: %w", err)
 	}
+	inventory.NodeStats = make(map[string]nodeInventoryStats, len(nodes))
 
-	// For each node, fetch VMs and LXCs.
+	// For each node, fetch VMs and LXCs in parallel.
 	var (
+		g taskgroup.Group
+
+		mu      sync.Mutex
 		numLXCs int
 		numVMs  int
 	)
 	for _, node := range nodes {
-		// Fetch the list of VMs
-		vms, err := s.client.GetQEMUVMs(ctx, node.Node)
-		if err != nil {
-			return inventory, fmt.Errorf("fetching VMs for node %q: %w", node.Node, err)
-		}
-		numVMs += len(vms)
+		// Save node name
+		inventory.NodeNames = append(inventory.NodeNames, node.Node)
 
-		// Add the VMs to the inventory
-		for _, vm := range vms {
-			// Skip VMs that are not running
-			if vm.Status != "running" {
-				continue
-			}
-
-			// Get the IP address of the VM
-			addrs, err := s.fetchQEMUAddrs(ctx, node.Node, vm.VMID)
+		g.Go(func() error {
+			defer logger.Info("finished fetching inventory from node", "node", node.Node)
+			nodeInventory, stats, err := s.fetchInventoryFromNode(ctx, node.Node)
 			if err != nil {
-				return inventory, fmt.Errorf("fetching IP addresses for VM %q on %q: %w", vm.VMID, node.Node, err)
-			}
-			logger.Debug("fetched IP addresses for VM", "vm", vm.Name, "addrs", addrs)
-
-			inventory.Resources = append(inventory.Resources, pveInventoryItem{
-				Name:  vm.Name,
-				ID:    vm.VMID,
-				Node:  node.Node,
-				Type:  pveItemTypeQEMU,
-				Tags:  strings.Split(vm.Tags, ";"),
-				Addrs: addrs,
-			})
-		}
-
-		// Fetch the list of LXCs
-		lxcs, err := s.client.GetLXCs(ctx, node.Node)
-		if err != nil {
-			return inventory, fmt.Errorf("fetching LXCs for node %q: %w", node.Node, err)
-		}
-		numLXCs += len(lxcs)
-
-		// Add the LXCs to the inventory
-		for _, lxc := range lxcs {
-			// Skip LXCs that are not running
-			if lxc.Status != "running" {
-				continue
+				return err
 			}
 
-			// Get the IP address of the VM
-			addrs, err := s.fetchLXCAddrs(ctx, node.Node, lxc.VMID)
-			if err != nil {
-				return inventory, fmt.Errorf("fetching IP addresses for LXC %q on %q: %w", lxc.VMID, node.Node, err)
-			}
-			logger.Debug("fetched IP addresses for LXC", "lxc", lxc.Name, "addrs", addrs)
+			mu.Lock()
+			defer mu.Unlock()
 
-			inventory.Resources = append(inventory.Resources, pveInventoryItem{
-				Name:  lxc.Name,
-				ID:    lxc.VMID,
-				Node:  node.Node,
-				Type:  pveItemTypeLXC,
-				Tags:  strings.Split(lxc.Tags, ";"),
-				Addrs: addrs,
-			})
-		}
+			// Update resources
+			inventory.NodeStats[node.Node] = stats
+			inventory.Resources = append(inventory.Resources, nodeInventory.Resources...)
+
+			// Update stats
+			numLXCs += stats.NumLXCs
+			numVMs += stats.NumVMs
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return inventory, fmt.Errorf("fetching inventory from nodes: %w", err)
 	}
 
 	logger.Debug("fetched inventory from Proxmox",
@@ -135,6 +113,73 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 		"num_lxcs", numLXCs)
 
 	return inventory, nil
+}
+
+func (s *server) fetchInventoryFromNode(ctx context.Context, node string) (inventory pveInventory, stats nodeInventoryStats, _ error) {
+	logger := logger.With("node", node)
+
+	// Fetch the list of VMs
+	vms, err := s.client.GetQEMUVMs(ctx, node)
+	if err != nil {
+		return inventory, stats, fmt.Errorf("fetching VMs for node %q: %w", node, err)
+	}
+	stats.NumVMs = len(vms)
+
+	// Add the VMs to the inventory
+	for _, vm := range vms {
+		// Skip VMs that are not running
+		if vm.Status != "running" {
+			continue
+		}
+
+		// Get the IP address of the VM
+		addrs, err := s.fetchQEMUAddrs(ctx, node, vm.VMID)
+		if err != nil {
+			return inventory, stats, fmt.Errorf("fetching IP addresses for VM %q on %q: %w", vm.VMID, node, err)
+		}
+		logger.Debug("fetched IP addresses for VM", "vm", vm.Name, "addrs", addrs)
+
+		inventory.Resources = append(inventory.Resources, pveInventoryItem{
+			Name:  vm.Name,
+			ID:    vm.VMID,
+			Node:  node,
+			Type:  pveItemTypeQEMU,
+			Tags:  strings.Split(vm.Tags, ";"),
+			Addrs: addrs,
+		})
+	}
+
+	// Fetch the list of LXCs
+	lxcs, err := s.client.GetLXCs(ctx, node)
+	if err != nil {
+		return inventory, stats, fmt.Errorf("fetching LXCs for node %q: %w", node, err)
+	}
+	stats.NumLXCs = len(vms)
+
+	// Add the LXCs to the inventory
+	for _, lxc := range lxcs {
+		// Skip LXCs that are not running
+		if lxc.Status != "running" {
+			continue
+		}
+
+		// Get the IP address of the VM
+		addrs, err := s.fetchLXCAddrs(ctx, node, lxc.VMID)
+		if err != nil {
+			return inventory, stats, fmt.Errorf("fetching IP addresses for LXC %q on %q: %w", lxc.VMID, node, err)
+		}
+		logger.Debug("fetched IP addresses for LXC", "lxc", lxc.Name, "addrs", addrs)
+
+		inventory.Resources = append(inventory.Resources, pveInventoryItem{
+			Name:  lxc.Name,
+			ID:    lxc.VMID,
+			Node:  node,
+			Type:  pveItemTypeLXC,
+			Tags:  strings.Split(lxc.Tags, ";"),
+			Addrs: addrs,
+		})
+	}
+	return inventory, stats, nil
 }
 
 func (s *server) fetchQEMUAddrs(ctx context.Context, node string, vmID int) ([]netip.Addr, error) {

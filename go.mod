@@ -3,6 +3,7 @@ module github.com/andrew-d/proxmox-service-discovery
 go 1.24
 
 require (
+	github.com/creachadair/taskgroup v0.13.2
 	github.com/miekg/dns v1.1.64
 	github.com/oklog/run v1.1.0
 	github.com/spf13/pflag v1.0.6
