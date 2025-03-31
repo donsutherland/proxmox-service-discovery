@@ -55,7 +55,7 @@ func (t pveItemType) String() string {
 
 func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ error) {
 	// Start by fetching the list of nodes from the Proxmox API
-	nodes, err := fetchFromProxmox[[]Node](ctx, s.host+"/api2/json/nodes", s.auth)
+	nodes, err := s.client.GetNodes(ctx)
 	if err != nil {
 		return inventory, fmt.Errorf("fetching nodes: %w", err)
 	}
@@ -67,7 +67,7 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 	)
 	for _, node := range nodes {
 		// Fetch the list of VMs
-		vms, err := fetchFromProxmox[[]QEMU](ctx, s.host+"/api2/json/nodes/"+node.Node+"/qemu", s.auth)
+		vms, err := s.client.GetQEMUVMs(ctx, node.Node)
 		if err != nil {
 			return inventory, fmt.Errorf("fetching VMs for node %q: %w", node.Node, err)
 		}
@@ -98,7 +98,7 @@ func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ 
 		}
 
 		// Fetch the list of LXCs
-		lxcs, err := fetchFromProxmox[[]LXC](ctx, s.host+"/api2/json/nodes/"+node.Node+"/lxc", s.auth)
+		lxcs, err := s.client.GetLXCs(ctx, node.Node)
 		if err != nil {
 			return inventory, fmt.Errorf("fetching LXCs for node %q: %w", node.Node, err)
 		}
@@ -141,26 +141,35 @@ func (s *server) fetchQEMUAddrs(ctx context.Context, node string, vmID int) ([]n
 	logger := logger.With("vm", vmID, "node", node)
 
 	// Start by seeing if we can find a static IP address in the QEMU config.
-	uri := fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/config", s.host, node, vmID)
-	conf, err := fetchFromProxmox[QEMUConfig](ctx, uri, s.auth)
+	conf, err := s.client.GetQEMUConfig(ctx, node, vmID)
 	if err != nil {
 		return nil, fmt.Errorf("fetching QEMU config for %q on %q: %w", vmID, node, err)
 	}
 
-	if addr, err := netip.ParseAddr(conf.IPConfig0); err == nil {
-		return []netip.Addr{addr}, nil
+	// The ipconfig0 field is a comma-separated list of key-value pairs,
+	// used to pass configuration to cloud-init; see the following for more
+	// information:
+	//    https://pve.proxmox.com/pve-docs/chapter-qm.html#qm_cloudinit
+	//
+	// Split and see if there's an "ip" key.
+	ipConfig := splitKVs(conf.IPConfig0)
+	if ip, ok := ipConfig["ip"]; ok {
+		if pfx, err := netip.ParsePrefix(ip); err == nil {
+			return []netip.Addr{pfx.Addr()}, nil
+		} else {
+			logger.Warn("parsing static IP address",
+				slog.String("address", ip),
+				pvelog.Error(err))
+		}
 	}
 
 	// Find the hardware address of the first network interface.
+	netConfig := splitKVs(conf.Net0)
+
 	var hwAddr string
-	parts := strings.Split(conf.Net0, ",")
-	for _, part := range parts {
-		if suff, ok := strings.CutPrefix(part, "macaddr="); ok {
-			hwAddr = suff
-			break
-		}
-		if suff, ok := strings.CutPrefix(part, "virtio="); ok {
-			hwAddr = suff
+	for _, key := range []string{"macaddr", "virtio"} {
+		if addr, ok := netConfig[key]; ok {
+			hwAddr = addr
 			break
 		}
 	}
@@ -170,8 +179,7 @@ func (s *server) fetchQEMUAddrs(ctx context.Context, node string, vmID int) ([]n
 	}
 
 	// Otherwise, fetch and return all non-localhost IP addresses from the QEMU guest, if any.
-	uri = fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/agent/network-get-interfaces", s.host, node, vmID)
-	interfaces, err := fetchFromProxmox[AgentInterfacesResponse](ctx, uri, s.auth)
+	interfaces, err := s.client.GetQEMUInterfaces(ctx, node, vmID)
 	if err != nil {
 		return nil, fmt.Errorf("fetching QEMU guest interfaces for %q on %q: %w", vmID, node, err)
 	}
@@ -207,8 +215,7 @@ func (s *server) fetchLXCAddrs(ctx context.Context, node string, vmID int) ([]ne
 	logger := logger.With("lxc", vmID, "node", node)
 
 	// Fetch the LXC guest config to see if we can find a static IP address.
-	uri := fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/config", s.host, node, vmID)
-	conf, err := fetchFromProxmox[LXCConfig](ctx, uri, s.auth)
+	conf, err := s.client.GetLXCConfig(ctx, node, vmID)
 	if err != nil {
 		return nil, fmt.Errorf("fetching LXC config for %q on %q: %w", vmID, node, err)
 	}
@@ -247,8 +254,7 @@ func (s *server) fetchLXCAddrs(ctx context.Context, node string, vmID int) ([]ne
 	}
 
 	// Fetch and return all non-localhost IP addresses from the LXC guest, if any.
-	uri = fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/interfaces", s.host, node, vmID)
-	interfaces, err := fetchFromProxmox[[]LXCInterface](ctx, uri, s.auth)
+	interfaces, err := s.client.GetLXCInterfaces(ctx, node, vmID)
 	if err != nil {
 		return nil, fmt.Errorf("fetching LXC guest interfaces for %q on %q: %w", vmID, node, err)
 	}
@@ -286,4 +292,20 @@ func (s *server) fetchLXCAddrs(ctx context.Context, node string, vmID int) ([]ne
 		}
 	}
 	return addrs, nil
+}
+
+func splitKVs(s string) map[string]string {
+	if len(s) == 0 {
+		return nil
+	}
+
+	kvs := make(map[string]string)
+	for _, kv := range strings.Split(s, ",") {
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		kvs[key] = value
+	}
+	return kvs
 }

@@ -78,14 +78,86 @@ type LXCConfig struct {
 	Net0 string `json:"net0"`
 }
 
-func fetchFromProxmox[T any](ctx context.Context, uri string, auth proxmoxAuthProvider) (T, error) {
+// proxmoxClient defines the interface for making requests to the Proxmox API.
+// This interface allows for mocking in tests.
+type proxmoxClient interface {
+	// GetNodes retrieves the list of nodes from the Proxmox API
+	GetNodes(ctx context.Context) ([]Node, error)
+
+	// GetQEMUVMs retrieves the list of QEMU VMs for a given node
+	GetQEMUVMs(ctx context.Context, node string) ([]QEMU, error)
+
+	// GetLXCs retrieves the list of LXC containers for a given node
+	GetLXCs(ctx context.Context, node string) ([]LXC, error)
+
+	// GetQEMUConfig retrieves the configuration of a QEMU VM
+	GetQEMUConfig(ctx context.Context, node string, vmID int) (QEMUConfig, error)
+
+	// GetQEMUInterfaces retrieves the network interfaces of a QEMU VM
+	GetQEMUInterfaces(ctx context.Context, node string, vmID int) (AgentInterfacesResponse, error)
+
+	// GetLXCConfig retrieves the configuration of an LXC container
+	GetLXCConfig(ctx context.Context, node string, vmID int) (LXCConfig, error)
+
+	// GetLXCInterfaces retrieves the network interfaces of an LXC container
+	GetLXCInterfaces(ctx context.Context, node string, vmID int) ([]LXCInterface, error)
+}
+
+// defaultProxmoxClient is the default implementation of proxmoxClient that
+// makes actual HTTP requests to the Proxmox API.
+type defaultProxmoxClient struct {
+	host string
+	auth proxmoxAuthProvider
+}
+
+// newDefaultProxmoxClient creates a new default Proxmox client
+func newDefaultProxmoxClient(host string, auth proxmoxAuthProvider) *defaultProxmoxClient {
+	return &defaultProxmoxClient{
+		host: host,
+		auth: auth,
+	}
+}
+
+func (c *defaultProxmoxClient) GetNodes(ctx context.Context) ([]Node, error) {
+	return fetchFromProxmox[[]Node](c, ctx, c.host+"/api2/json/nodes")
+}
+
+func (c *defaultProxmoxClient) GetQEMUVMs(ctx context.Context, node string) ([]QEMU, error) {
+	return fetchFromProxmox[[]QEMU](c, ctx, c.host+"/api2/json/nodes/"+node+"/qemu")
+}
+
+func (c *defaultProxmoxClient) GetLXCs(ctx context.Context, node string) ([]LXC, error) {
+	return fetchFromProxmox[[]LXC](c, ctx, c.host+"/api2/json/nodes/"+node+"/lxc")
+}
+
+func (c *defaultProxmoxClient) GetQEMUConfig(ctx context.Context, node string, vmID int) (QEMUConfig, error) {
+	uri := fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/config", c.host, node, vmID)
+	return fetchFromProxmox[QEMUConfig](c, ctx, uri)
+}
+
+func (c *defaultProxmoxClient) GetQEMUInterfaces(ctx context.Context, node string, vmID int) (AgentInterfacesResponse, error) {
+	uri := fmt.Sprintf("%s/api2/json/nodes/%s/qemu/%d/agent/network-get-interfaces", c.host, node, vmID)
+	return fetchFromProxmox[AgentInterfacesResponse](c, ctx, uri)
+}
+
+func (c *defaultProxmoxClient) GetLXCConfig(ctx context.Context, node string, vmID int) (LXCConfig, error) {
+	uri := fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/config", c.host, node, vmID)
+	return fetchFromProxmox[LXCConfig](c, ctx, uri)
+}
+
+func (c *defaultProxmoxClient) GetLXCInterfaces(ctx context.Context, node string, vmID int) ([]LXCInterface, error) {
+	uri := fmt.Sprintf("%s/api2/json/nodes/%s/lxc/%d/interfaces", c.host, node, vmID)
+	return fetchFromProxmox[[]LXCInterface](c, ctx, uri)
+}
+
+func fetchFromProxmox[T any](c *defaultProxmoxClient, ctx context.Context, uri string) (T, error) {
 	var zero T
 
 	req, err := http.NewRequestWithContext(ctx, "GET", uri, nil)
 	if err != nil {
 		return zero, fmt.Errorf("creating HTTP request: %w", err)
 	}
-	auth.UpdateRequest(req)
+	c.auth.UpdateRequest(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

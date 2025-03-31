@@ -126,17 +126,7 @@ func main() {
 		authUpdateCancel()
 	})
 
-	dnsMux := dns.NewServeMux()
-	server := &server{
-		host:    *proxmoxHost,
-		dnsZone: *dnsZone,
-		auth:    auth,
-		dnsMux:  dnsMux,
-	}
-	if !strings.HasSuffix(server.dnsZone, ".") {
-		server.dnsZone += "."
-	}
-	dnsMux.HandleFunc(server.dnsZone, server.handleDNSRequest)
+	server := newServer(*proxmoxHost, *dnsZone, auth)
 
 	// Create the DNS server.
 	const shutdownTimeout = 5 * time.Second
@@ -144,7 +134,7 @@ func main() {
 		udpServer := &dns.Server{
 			Addr:    *addr,
 			Net:     "udp",
-			Handler: dnsMux,
+			Handler: server.dnsMux,
 		}
 		rg.Add(func() error {
 			return udpServer.ListenAndServe()
@@ -158,7 +148,7 @@ func main() {
 		tcpServer := &dns.Server{
 			Addr:    *addr,
 			Net:     "tcp",
-			Handler: dnsMux,
+			Handler: server.dnsMux,
 		}
 		rg.Add(func() error {
 			return tcpServer.ListenAndServe()
@@ -217,12 +207,30 @@ type server struct {
 	host    string
 	dnsZone string // with trailing dot
 	auth    proxmoxAuthProvider
+	client  proxmoxClient
 
 	dnsMux *dns.ServeMux // immutable
 
 	// DNS state
 	mu      sync.RWMutex
 	records map[string]record
+}
+
+// newServer creates a new server instance with the given configuration
+func newServer(host, dnsZone string, auth proxmoxAuthProvider) *server {
+	if !strings.HasSuffix(dnsZone, ".") {
+		dnsZone += "."
+	}
+
+	s := &server{
+		host:    host,
+		dnsZone: dnsZone,
+		auth:    auth,
+		client:  newDefaultProxmoxClient(host, auth),
+		dnsMux:  dns.NewServeMux(),
+	}
+	s.dnsMux.HandleFunc(dnsZone, s.handleDNSRequest)
+	return s
 }
 
 type record struct {
@@ -280,7 +288,7 @@ func filterResources(inventory []pveInventoryItem) []pveInventoryItem {
 
 		filtered = append(filtered, item)
 	}
-	return inventory
+	return filtered
 }
 
 func shouldIncludeResourceByTags(item pveInventoryItem) bool {
