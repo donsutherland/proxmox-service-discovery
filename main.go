@@ -32,7 +32,7 @@ var (
 	addr = pflag.StringP("addr", "a", ":53", "address to listen on for DNS")
 	udp  = pflag.Bool("udp", true, "enable UDP listener")
 	tcp  = pflag.Bool("tcp", true, "enable TCP listener")
-	
+
 	// Debug HTTP server configuration
 	debugAddr = pflag.String("debug-addr", "", "address to listen on for HTTP debug server (disabled if empty)")
 
@@ -185,7 +185,7 @@ type server struct {
 	debugAddr string
 
 	dnsMux *dns.ServeMux // immutable
-	
+
 	// Debug HTTP server
 	debugMux     *http.ServeMux // immutable, for HTTP debug server
 	debugStarted bool           // whether debug server was started
@@ -215,16 +215,16 @@ func newServer(host, dnsZone string, auth proxmoxAuthProvider, debugAddr string)
 		dnsMux:    dns.NewServeMux(),
 		debugAddr: debugAddr,
 	}
-	
+
 	// Initialize the DNS request handler
 	s.dnsMux.HandleFunc(dnsZone, s.handleDNSRequest)
-	
+
 	// Initialize debug HTTP server if address is provided
 	if debugAddr != "" {
 		s.debugMux = http.NewServeMux()
 		s.setupDebugHandlers()
 	}
-	
+
 	return s, nil
 }
 
@@ -249,11 +249,9 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 	for _, item := range filtered {
 		fqdn := item.Name + "." + s.dnsZone
 		rec := record{
-			FQDN: fqdn,
-			Type: dns.Type(dns.TypeA),
-		}
-		for _, addr := range item.Addrs {
-			rec.Answers = append(rec.Answers, addr)
+			FQDN:    fqdn,
+			Type:    dns.Type(dns.TypeA),
+			Answers: item.Addrs,
 		}
 		records[fqdn] = rec
 	}
