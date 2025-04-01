@@ -2,6 +2,7 @@ package main
 
 import (
 	"html/template"
+	"maps"
 	"net/http"
 	"net/netip"
 	"regexp"
@@ -398,13 +399,10 @@ func (s *server) handleDebugDNS(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.RUnlock()
 
 	// Create a sorted list of records
-	var records []DNSRecordInfo
-	fqdns := make([]string, 0, len(s.records))
-	for fqdn := range s.records {
-		fqdns = append(fqdns, fqdn)
-	}
+	fqdns := slices.Collect(maps.Keys(s.records))
 	slices.Sort(fqdns)
 
+	var records []DNSRecordInfo
 	for _, fqdn := range fqdns {
 		rec := s.records[fqdn]
 
