@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/miekg/dns"
@@ -42,5 +43,18 @@ func PeriodicHandler(ctx context.Context, interval time.Duration, f func(context
 			}
 		}, func(error) {
 			cancel()
+		}
+}
+
+// HTTPServerHandler returns a [run.Group]-compatible handler for an HTTP server
+// that properly starts and gracefully stops the HTTP server.
+func HTTPServerHandler(srv *http.Server) (func() error, func(error)) {
+	const shutdownTimeout = 5 * time.Second
+	return func() error {
+			return srv.ListenAndServe()
+		}, func(error) {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+			srv.Shutdown(shutdownCtx)
 		}
 }

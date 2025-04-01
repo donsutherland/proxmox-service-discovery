@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"regexp"
 	"strings"
@@ -31,6 +32,9 @@ var (
 	addr = pflag.StringP("addr", "a", ":53", "address to listen on for DNS")
 	udp  = pflag.Bool("udp", true, "enable UDP listener")
 	tcp  = pflag.Bool("tcp", true, "enable TCP listener")
+	
+	// Debug HTTP server configuration
+	debugAddr = pflag.String("debug-addr", "", "address to listen on for HTTP debug server (disabled if empty)")
 
 	// One of these must be set
 	proxmoxPassword    = pflag.StringP("proxmox-password", "p", "", "Proxmox password to connect with")
@@ -109,7 +113,7 @@ func main() {
 		return nil
 	}))
 
-	server, err := newServer(*proxmoxHost, *dnsZone, auth)
+	server, err := newServer(*proxmoxHost, *dnsZone, auth, *debugAddr)
 	if err != nil {
 		pvelog.Fatal(logger, "error creating server", pvelog.Error(err))
 	}
@@ -149,6 +153,11 @@ func main() {
 		return nil
 	}))
 
+	// Start the HTTP debug server if configured
+	if *debugAddr != "" {
+		server.StartDebugServer(&rg)
+	}
+
 	// Shutdown gracefully on SIGINT/SIGTERM
 	rg.Add(run.SignalHandler(ctx, syscall.SIGINT, syscall.SIGTERM))
 
@@ -168,13 +177,18 @@ func main() {
 
 type server struct {
 	// config
-	host    string
-	dnsZone string // with trailing dot
-	auth    proxmoxAuthProvider
-	client  proxmoxClient
-	fc      *FilterConfig
+	host      string
+	dnsZone   string // with trailing dot
+	auth      proxmoxAuthProvider
+	client    proxmoxClient
+	fc        *FilterConfig
+	debugAddr string
 
 	dnsMux *dns.ServeMux // immutable
+	
+	// Debug HTTP server
+	debugMux     *http.ServeMux // immutable, for HTTP debug server
+	debugStarted bool           // whether debug server was started
 
 	// DNS state
 	mu      sync.RWMutex
@@ -182,7 +196,7 @@ type server struct {
 }
 
 // newServer creates a new server instance with the given configuration
-func newServer(host, dnsZone string, auth proxmoxAuthProvider) (*server, error) {
+func newServer(host, dnsZone string, auth proxmoxAuthProvider, debugAddr string) (*server, error) {
 	if !strings.HasSuffix(dnsZone, ".") {
 		dnsZone += "."
 	}
@@ -193,14 +207,24 @@ func newServer(host, dnsZone string, auth proxmoxAuthProvider) (*server, error) 
 	}
 
 	s := &server{
-		host:    host,
-		dnsZone: dnsZone,
-		auth:    auth,
-		client:  newDefaultProxmoxClient(host, auth),
-		fc:      fc,
-		dnsMux:  dns.NewServeMux(),
+		host:      host,
+		dnsZone:   dnsZone,
+		auth:      auth,
+		client:    newDefaultProxmoxClient(host, auth),
+		fc:        fc,
+		dnsMux:    dns.NewServeMux(),
+		debugAddr: debugAddr,
 	}
+	
+	// Initialize the DNS request handler
 	s.dnsMux.HandleFunc(dnsZone, s.handleDNSRequest)
+	
+	// Initialize debug HTTP server if address is provided
+	if debugAddr != "" {
+		s.debugMux = http.NewServeMux()
+		s.setupDebugHandlers()
+	}
+	
 	return s, nil
 }
 
