@@ -66,6 +66,7 @@ go build
 
 - `--proxmox-host`: URL of your Proxmox API
 - `--dns-zone`: DNS zone to serve records for (e.g., `lab.local`)
+- `--proxmox-user`: Proxmox user (e.g., `root@pam`)
 - Authentication (one of):
   - `--proxmox-password`: Password for Proxmox user
   - `--proxmox-token-id` and `--proxmox-token-secret`: Proxmox API token
@@ -131,9 +132,10 @@ For better security, use API tokens instead of your Proxmox password:
 
 1. Log in to Proxmox web interface
 2. Go to Datacenter → Permissions → API Tokens
-3. Click "Add" and create a token with the format `USER@REALM!TOKENID`
-4. Make sure to grant the token appropriate read permissions on your cluster;
-   typically, the `PVEAuditor` role is sufficient.
+3. Click "Add" and create a token for the user you wish to use
+4. Make sure to grant the token appropriate read permissions on your cluster
+   under Datacenter → Permissions; typically, the `PVEAuditor` role is
+   sufficient
 
 ## Troubleshooting
 
