@@ -16,6 +16,7 @@ import (
 	"github.com/oklog/run"
 	"github.com/spf13/pflag"
 
+	"github.com/andrew-d/proxmox-service-discovery/internal/buildtags"
 	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
 )
 
@@ -100,23 +101,13 @@ func main() {
 	}
 
 	// Periodically call the auth provider's update function.
-	authUpdateCtx, authUpdateCancel := context.WithCancel(ctx)
-	rg.Add(func() error {
-		ticker := time.NewTicker(15 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-authUpdateCtx.Done():
-				return authUpdateCtx.Err()
-			case <-ticker.C:
-				if err := auth.Authenticate(authUpdateCtx); err != nil {
-					logger.Error("error updating Proxmox auth", pvelog.Error(err))
-				}
-			}
+	rg.Add(PeriodicHandler(ctx, 15*time.Minute, func(ctx context.Context) error {
+		// NOTE: we never error here, as we don't want to stop the run.Group.
+		if err := auth.Authenticate(ctx); err != nil {
+			logger.Error("error updating Proxmox auth", pvelog.Error(err))
 		}
-	}, func(error) {
-		authUpdateCancel()
-	})
+		return nil
+	}))
 
 	server, err := newServer(*proxmoxHost, *dnsZone, auth)
 	if err != nil {
@@ -131,13 +122,7 @@ func main() {
 			Net:     "udp",
 			Handler: server.dnsMux,
 		}
-		rg.Add(func() error {
-			return udpServer.ListenAndServe()
-		}, func(error) {
-			shutdownCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
-			defer cancel()
-			udpServer.ShutdownContext(shutdownCtx)
-		})
+		rg.Add(DNSServerHandler(udpServer))
 	}
 	if *tcp {
 		tcpServer := &dns.Server{
@@ -145,39 +130,24 @@ func main() {
 			Net:     "tcp",
 			Handler: server.dnsMux,
 		}
-		rg.Add(func() error {
-			return tcpServer.ListenAndServe()
-		}, func(error) {
-			shutdownCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
-			defer cancel()
-			tcpServer.ShutdownContext(shutdownCtx)
-		})
+		rg.Add(DNSServerHandler(tcpServer))
 	}
 
 	// Fetch DNS records at process start so we have a warm cache.
 	if err := server.updateDNSRecords(ctx); err != nil {
-		// TODO: fatal or not?
+		// TODO: fatal or not? configurable?
 		pvelog.Fatal(logger, "error fetching initial DNS records", pvelog.Error(err))
 	}
 
 	// Periodically update the DNS records.
-	updateCtx, updateCancel := context.WithCancel(ctx)
-	rg.Add(func() error {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-updateCtx.Done():
-				return nil
-			case <-ticker.C:
-				if err := server.updateDNSRecords(updateCtx); err != nil {
-					logger.Error("error updating DNS records", pvelog.Error(err))
-				}
-			}
+	rg.Add(PeriodicHandler(ctx, 1*time.Minute, func(ctx context.Context) error {
+		// NOTE: we never error here, as we don't want to stop the
+		// run.Group on failure.
+		if err := server.updateDNSRecords(ctx); err != nil {
+			logger.Error("error updating DNS records", pvelog.Error(err))
 		}
-	}, func(error) {
-		updateCancel()
-	})
+		return nil
+	}))
 
 	// Shutdown gracefully on SIGINT/SIGTERM
 	rg.Add(run.SignalHandler(ctx, syscall.SIGINT, syscall.SIGTERM))
@@ -272,7 +242,9 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 }
 
 func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
-	logger.Debug("DNS request", "question", r.Question)
+	if buildtags.IsDev {
+		logger.Debug("DNS request", "question", r.Question)
+	}
 
 	msg := new(dns.Msg)
 	msg.SetReply(r)
@@ -304,7 +276,7 @@ func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	if err := w.WriteMsg(msg); err != nil {
-		logger.Error("writing DNS response", pvelog.Error(err))
+		logger.Error("error writing DNS response", pvelog.Error(err))
 	}
 }
 
