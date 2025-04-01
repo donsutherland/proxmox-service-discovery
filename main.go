@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"regexp"
 	"strings"
 	"sync"
@@ -189,6 +188,7 @@ type server struct {
 	// Debug HTTP server
 	debugMux     *http.ServeMux // immutable, for HTTP debug server
 	debugStarted bool           // whether debug server was started
+	noAddrs      []string       // list of FQDNs that we don't have addresses for
 
 	// DNS state
 	mu      sync.RWMutex
@@ -229,9 +229,8 @@ func newServer(host, dnsZone string, auth proxmoxAuthProvider, debugAddr string)
 }
 
 type record struct {
-	FQDN    string       // the name of the record (e.g. "foo.example.com")
-	Type    dns.Type     // the type of the record (e.g. dns.TypeA)
-	Answers []netip.Addr // the answer(s) to return (e.g. 192.168.100.200)
+	FQDN    string   // the name of the record (e.g. "foo.example.com")
+	Answers []dns.RR // the DNS records to return
 }
 
 func (s *server) updateDNSRecords(ctx context.Context) error {
@@ -245,21 +244,55 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 	filtered := s.fc.FilterResources(inventory.Resources)
 
 	// Create the DNS record map.
-	records := make(map[string]record)
+	var (
+		noAddrs []string
+		records = make(map[string]record)
+	)
 	for _, item := range filtered {
 		fqdn := item.Name + "." + s.dnsZone
-		rec := record{
-			FQDN:    fqdn,
-			Type:    dns.Type(dns.TypeA),
-			Answers: item.Addrs,
+
+		if len(item.Addrs) == 0 {
+			logger.Warn("no addresses for resource", "fqdn", fqdn)
+			noAddrs = append(noAddrs, fqdn)
+			continue
 		}
-		records[fqdn] = rec
+
+		var answers []dns.RR
+		for _, addr := range item.Addrs {
+			if addr.Is4() {
+				rr := new(dns.A)
+				rr.Hdr = dns.RR_Header{
+					Name:   fqdn,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				}
+				rr.A = addr.AsSlice()
+				answers = append(answers, rr)
+			} else if addr.Is6() {
+				rr := new(dns.AAAA)
+				rr.Hdr = dns.RR_Header{
+					Name:   fqdn,
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				}
+				rr.AAAA = addr.AsSlice()
+				answers = append(answers, rr)
+			}
+		}
+
+		records[fqdn] = record{
+			FQDN:    fqdn,
+			Answers: answers,
+		}
 	}
 
 	// Update the DNS records
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records = records
+	s.noAddrs = noAddrs
 	return nil
 }
 
@@ -277,16 +310,16 @@ func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 	var found bool
 	for _, q := range r.Question {
-		switch q.Qtype {
-		case dns.TypeA:
-			if answers := s.dnsARecordForLocked(q.Name); len(answers) > 0 {
-				msg.Answer = append(msg.Answer, answers...)
-				found = true
-			}
+		rec, ok := s.records[q.Name]
+		if !ok {
+			continue
+		}
 
-		case dns.TypeAAAA:
-			if answers := s.dnsAAAARecordForLocked(q.Name); len(answers) > 0 {
-				msg.Answer = append(msg.Answer, answers...)
+		// Add appropriate answers based on the question type
+		for _, answer := range rec.Answers {
+			header := answer.Header()
+			if header.Rrtype == q.Qtype {
+				msg.Answer = append(msg.Answer, answer)
 				found = true
 			}
 		}
@@ -300,54 +333,4 @@ func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if err := w.WriteMsg(msg); err != nil {
 		logger.Error("error writing DNS response", pvelog.Error(err))
 	}
-}
-
-func (s *server) dnsARecordForLocked(name string) []dns.RR {
-	rec, ok := s.records[name]
-	if !ok {
-		return nil
-	}
-
-	var answers []dns.RR
-	for _, a := range rec.Answers {
-		if !a.Is4() {
-			continue
-		}
-
-		rr := new(dns.A)
-		rr.Hdr = dns.RR_Header{
-			Name:   rec.FQDN,
-			Rrtype: dns.TypeA,
-			Class:  dns.ClassINET,
-			Ttl:    60,
-		}
-		rr.A = a.AsSlice()
-		answers = append(answers, rr)
-	}
-	return answers
-}
-
-func (s *server) dnsAAAARecordForLocked(name string) []dns.RR {
-	rec, ok := s.records[name]
-	if !ok {
-		return nil
-	}
-
-	var answers []dns.RR
-	for _, a := range rec.Answers {
-		if !a.Is6() {
-			continue
-		}
-
-		rr := new(dns.AAAA)
-		rr.Hdr = dns.RR_Header{
-			Name:   rec.FQDN,
-			Rrtype: dns.TypeAAAA,
-			Class:  dns.ClassINET,
-			Ttl:    60,
-		}
-		rr.AAAA = a.AsSlice()
-		answers = append(answers, rr)
-	}
-	return answers
 }

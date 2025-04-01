@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"html/template"
 	"maps"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/miekg/dns"
 	"github.com/oklog/run"
 
 	"github.com/andrew-d/proxmox-service-discovery/internal/buildtags"
@@ -102,6 +104,7 @@ const baseTmplStr = `
         }
         .badge-info { background-color: #3498db; color: white; }
         .badge-success { background-color: #2ecc71; color: white; }
+        .badge-warning { background-color: #f39c12; color: white; }
         pre { 
             background-color: #f8f9fa; 
             padding: 15px; 
@@ -230,7 +233,7 @@ const configTmplStr = `
 // DNS records page template
 const dnsTmplStr = `
 {{define "content"}}
-    <p>Total DNS records: <span class="badge badge-info">{{.RecordCount}}</span></p>
+    <h2>DNS Records <span class="badge badge-info">{{.Records | len}}</span></h2>
     
     <table>
         <tr>
@@ -250,6 +253,23 @@ const dnsTmplStr = `
         </tr>
         {{end}}
     </table>
+
+    {{with .NoAddrs}}
+    <h2>FQDNs with No Addresses <span class="badge badge-warning">{{. | len}}</span></h2>
+    <p>
+        The following FQDNs have no associated IP addresses:
+    </p>
+    <table>
+        <tr>
+            <th>FQDN</th>
+        </tr>
+        {{range .}}
+        <tr>
+            <td>{{.}}</td>
+        </tr>
+        {{end}}
+    </table>
+    {{end}}
 {{end}}
 `
 
@@ -299,8 +319,8 @@ type ConfigTemplateData struct {
 // DNSTemplateData represents the data for the DNS records page template
 type DNSTemplateData struct {
 	BaseTemplateData
-	Records     []DNSRecordInfo
-	RecordCount int
+	Records []DNSRecordInfo
+	NoAddrs []string
 }
 
 // ServerInfo represents server information for templates
@@ -406,18 +426,54 @@ func (s *server) handleDebugDNS(w http.ResponseWriter, r *http.Request) {
 	for _, fqdn := range fqdns {
 		rec := s.records[fqdn]
 
-		// Convert IP addresses to strings
-		addresses := make([]string, len(rec.Answers))
-		for i, addr := range rec.Answers {
-			addresses[i] = addr.String()
+		// Group answers by record type
+		recordTypes := make(map[string][]string)
+
+		for _, answer := range rec.Answers {
+			header := answer.Header()
+			recordType := dns.TypeToString[header.Rrtype]
+
+			// Extract the IP address based on the record type
+			var ipAddr string
+			switch header.Rrtype {
+			case dns.TypeA:
+				ipAddr = answer.(*dns.A).A.String()
+			case dns.TypeAAAA:
+				ipAddr = answer.(*dns.AAAA).AAAA.String()
+			default:
+				// Handle other record types if needed
+				ipAddr = "unknown"
+			}
+
+			recordTypes[recordType] = append(recordTypes[recordType], ipAddr)
 		}
 
-		records = append(records, DNSRecordInfo{
-			FQDN:      fqdn,
-			Type:      rec.Type.String(),
-			Addresses: addresses,
-		})
+		// Create record info for each record type
+		for recordType, addresses := range recordTypes {
+			records = append(records, DNSRecordInfo{
+				FQDN:      fqdn,
+				Type:      recordType,
+				Addresses: addresses,
+			})
+		}
 	}
+
+	// Sort records to ensure we have a deterministic order
+	slices.SortFunc(records, func(a, b DNSRecordInfo) int {
+		return cmp.Or(
+			cmp.Compare(a.FQDN, b.FQDN),
+			cmp.Compare(a.Type, b.Type),
+		)
+	})
+
+	// For each record, sort the list of addresses as well
+	for i := range records {
+		slices.Sort(records[i].Addresses)
+	}
+
+	// Sort the list of FQDNs with no addresses
+	noAddrs := slices.Clone(s.noAddrs)
+	slices.Sort(noAddrs)
 
 	data := DNSTemplateData{
 		BaseTemplateData: BaseTemplateData{
@@ -425,8 +481,8 @@ func (s *server) handleDebugDNS(w http.ResponseWriter, r *http.Request) {
 			Version: buildtags.Version,
 			IsDev:   buildtags.IsDev,
 		},
-		Records:     records,
-		RecordCount: len(records),
+		Records: records,
+		NoAddrs: noAddrs,
 	}
 
 	w.Header().Set("Content-Type", "text/html")
