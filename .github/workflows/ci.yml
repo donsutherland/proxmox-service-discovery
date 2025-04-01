@@ -13,6 +13,8 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Run all unit tests
         run: go test ./...
@@ -35,6 +37,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
+          go-version-file: go.mod
           cache: false
 
       - name: Run all unit tests
