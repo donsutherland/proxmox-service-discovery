@@ -201,7 +201,11 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Run filter
-			got := tt.config.FilterResources(inventory)
+			filt, err := NewFilter(&tt.config)
+			if err != nil {
+				t.Fatalf("failed to create filter: %v", err)
+			}
+			got := filt.FilterResources(inventory)
 
 			// Check results
 			if len(got) != len(tt.want) {
@@ -294,7 +298,11 @@ func TestFilterConfig_ShouldIncludeResourceByTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.config.shouldIncludeResourceByTags(tt.item)
+			filt, err := NewFilter(&tt.config)
+			if err != nil {
+				t.Fatalf("failed to create filter: %v", err)
+			}
+			got := filt.shouldIncludeResourceByTags(tt.item)
 			if got != tt.want {
 				t.Errorf("shouldIncludeResourceByTags() = %v, want %v", got, tt.want)
 			}
@@ -371,7 +379,11 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.config.shouldExcludeResourceByTags(tt.item)
+			filt, err := NewFilter(&tt.config)
+			if err != nil {
+				t.Fatalf("failed to create filter: %v", err)
+			}
+			got := filt.shouldExcludeResourceByTags(tt.item)
 			if got != tt.want {
 				t.Errorf("shouldExcludeResourceByTags() = %v, want %v", got, tt.want)
 			}
@@ -464,7 +476,11 @@ func TestFilterConfig_ShouldIncludeResourceByCIDRs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.config.shouldIncludeResourceByCIDRs(tt.item)
+			filt, err := NewFilter(&tt.config)
+			if err != nil {
+				t.Fatalf("failed to create filter: %v", err)
+			}
+			got := filt.shouldIncludeResourceByCIDRs(tt.item)
 			if got != tt.want {
 				t.Errorf("shouldIncludeResourceByCIDRs() = %v, want %v", got, tt.want)
 			}
@@ -557,7 +573,11 @@ func TestFilterConfig_ShouldExcludeResourceByCIDRs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.config.shouldExcludeResourceByCIDRs(tt.item)
+			filt, err := NewFilter(&tt.config)
+			if err != nil {
+				t.Fatalf("failed to create filter: %v", err)
+			}
+			got := filt.shouldExcludeResourceByCIDRs(tt.item)
 			if got != tt.want {
 				t.Errorf("shouldExcludeResourceByCIDRs() = %v, want %v", got, tt.want)
 			}

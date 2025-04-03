@@ -181,6 +181,7 @@ type server struct {
 	auth      proxmoxAuthProvider
 	client    proxmoxClient
 	fc        *FilterConfig
+	filt      *Filter
 	debugAddr string
 
 	dnsMux *dns.ServeMux // immutable
@@ -205,6 +206,10 @@ func newServer(host, dnsZone string, auth proxmoxAuthProvider, debugAddr string)
 	if err != nil {
 		return nil, fmt.Errorf("creating filter config: %w", err)
 	}
+	filt, err := NewFilter(fc)
+	if err != nil {
+		return nil, fmt.Errorf("creating filter: %w", err)
+	}
 
 	s := &server{
 		host:      host,
@@ -212,6 +217,7 @@ func newServer(host, dnsZone string, auth proxmoxAuthProvider, debugAddr string)
 		auth:      auth,
 		client:    newDefaultProxmoxClient(host, auth),
 		fc:        fc,
+		filt:      filt,
 		dnsMux:    dns.NewServeMux(),
 		debugAddr: debugAddr,
 	}
@@ -241,7 +247,7 @@ func (s *server) updateDNSRecords(ctx context.Context) error {
 	}
 
 	// Filter the inventory to only include resources we care about.
-	filtered := s.fc.FilterResources(inventory.Resources)
+	filtered := s.filt.FilterResources(inventory.Resources)
 
 	// Create the DNS record map.
 	var (

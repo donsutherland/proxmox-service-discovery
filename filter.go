@@ -32,10 +32,6 @@ type FilterConfig struct {
 	// Resources with at least one tag matching any regex are included.
 	IncludeTagsRe []*regexp.Regexp
 
-	// combinedIncludeTagsRe is a single regex that combines all the
-	// IncludeTagsRe patterns. It is initialized lazily when needed.
-	combinedIncludeTagsRe *regexp.Regexp
-
 	// ExcludeTags are the tags that will cause resources to be excluded.
 	// This takes priority over inclusion.
 	ExcludeTags []string
@@ -45,10 +41,6 @@ type FilterConfig struct {
 	// This takes priority over inclusion.
 	ExcludeTagsRe []*regexp.Regexp
 
-	// combinedExcludeTagsRe is a single regex that combines all the
-	// ExcludeTagsRe patterns. It is initialized lazily when needed.
-	combinedExcludeTagsRe *regexp.Regexp
-
 	// IncludeCIDRs are the network CIDRs that resources must have an IP in to be included.
 	// If empty, all resources are included (unless excluded).
 	IncludeCIDRs []netip.Prefix
@@ -56,6 +48,21 @@ type FilterConfig struct {
 	// ExcludeCIDRs are the network CIDRs that will cause resources to be excluded.
 	// This takes priority over inclusion.
 	ExcludeCIDRs []netip.Prefix
+}
+
+// Filter is a compiled representation of the filter configuration.
+type Filter struct {
+	typeFilter    string
+	includeTags   []string
+	includeTagsRe *regexp.Regexp // combined regex for all IncludeTagsRe
+	excludeTags   []string
+	excludeTagsRe *regexp.Regexp // combined regex for all ExcludeTagsRe
+
+	// TODO: use a BART table or something if we see this becoming a
+	// performance bottleneck; I assume that most of the time, the
+	// number of CIDRs will be small.
+	includeCIDRs []netip.Prefix
+	excludeCIDRs []netip.Prefix
 }
 
 // NewFilterConfigFromFlags creates a filter configuration from the global command line flags.
@@ -67,8 +74,6 @@ func NewFilterConfigFromFlags() (*FilterConfig, error) {
 		ExcludeTags:   *filterExcludeTags,
 		ExcludeTagsRe: parsedExcludeTagsRe,
 	}
-
-	// The combined regular expressions will be initialized lazily when needed
 
 	// Parse CIDRs
 	for _, cidr := range *filterIncludeCIDRs {
@@ -90,28 +95,47 @@ func NewFilterConfigFromFlags() (*FilterConfig, error) {
 	return fc, nil
 }
 
+// NewFilter creates a new filter based on the provided configuration.
+func NewFilter(fc *FilterConfig) (*Filter, error) {
+	f := &Filter{
+		typeFilter:   fc.Type,
+		includeTags:  fc.IncludeTags,
+		excludeTags:  fc.ExcludeTags,
+		includeCIDRs: fc.IncludeCIDRs,
+		excludeCIDRs: fc.ExcludeCIDRs,
+	}
+	// Combine the IncludeTagsRe and ExcludeTagsRe into a single regex
+	if len(fc.IncludeTagsRe) > 0 {
+		f.includeTagsRe = combineRegexps(fc.IncludeTagsRe)
+	}
+	if len(fc.ExcludeTagsRe) > 0 {
+		f.excludeTagsRe = combineRegexps(fc.ExcludeTagsRe)
+	}
+	return f, nil
+}
+
 // FilterResources filters a list of inventory items according to the filter configuration.
-func (fc *FilterConfig) FilterResources(inventory []pveInventoryItem) []pveInventoryItem {
+func (f *Filter) FilterResources(inventory []pveInventoryItem) []pveInventoryItem {
 	var filtered []pveInventoryItem
 	for _, item := range inventory {
 		// Filter by type
-		if fc.Type != "" && item.Type.String() != fc.Type {
+		if f.typeFilter != "" && item.Type.String() != f.typeFilter {
 			continue
 		}
 
 		// Filter by tags
-		if !fc.shouldIncludeResourceByTags(item) {
+		if !f.shouldIncludeResourceByTags(item) {
 			continue
 		}
-		if fc.shouldExcludeResourceByTags(item) {
+		if f.shouldExcludeResourceByTags(item) {
 			continue
 		}
 
 		// Filter by CIDRs
-		if !fc.shouldIncludeResourceByCIDRs(item) {
+		if !f.shouldIncludeResourceByCIDRs(item) {
 			continue
 		}
-		if fc.shouldExcludeResourceByCIDRs(item) {
+		if f.shouldExcludeResourceByCIDRs(item) {
 			continue
 		}
 
@@ -121,15 +145,15 @@ func (fc *FilterConfig) FilterResources(inventory []pveInventoryItem) []pveInven
 }
 
 // shouldIncludeResourceByTags determines if a resource should be included based on tags.
-func (fc *FilterConfig) shouldIncludeResourceByTags(item pveInventoryItem) bool {
+func (f *Filter) shouldIncludeResourceByTags(item pveInventoryItem) bool {
 	// If there are no include tags, include everything.
-	if len(fc.IncludeTags) == 0 && len(fc.IncludeTagsRe) == 0 {
+	if len(f.includeTags) == 0 && f.includeTagsRe == nil {
 		return true
 	}
 
 	// If there are include tags, include only if the item has at least one
 	// of them.
-	for _, tag := range fc.IncludeTags {
+	for _, tag := range f.includeTags {
 		if item.Tags[tag] {
 			return true
 		}
@@ -137,14 +161,9 @@ func (fc *FilterConfig) shouldIncludeResourceByTags(item pveInventoryItem) bool 
 
 	// If there are include tag regexes, include only if the item has at
 	// least one matching tag.
-	if len(fc.IncludeTagsRe) > 0 {
-		// Lazy initialization of combined regex
-		if fc.combinedIncludeTagsRe == nil {
-			fc.combinedIncludeTagsRe = combineRegexps(fc.IncludeTagsRe)
-		}
-
+	if f.includeTagsRe != nil {
 		for tag := range item.Tags {
-			if fc.combinedIncludeTagsRe.MatchString(tag) {
+			if f.includeTagsRe.MatchString(tag) {
 				return true
 			}
 		}
@@ -154,14 +173,14 @@ func (fc *FilterConfig) shouldIncludeResourceByTags(item pveInventoryItem) bool 
 }
 
 // shouldExcludeResourceByTags determines if a resource should be excluded based on tags.
-func (fc *FilterConfig) shouldExcludeResourceByTags(item pveInventoryItem) bool {
+func (f *Filter) shouldExcludeResourceByTags(item pveInventoryItem) bool {
 	// If there are no exclude tags, don't exclude anything.
-	if len(fc.ExcludeTags) == 0 && len(fc.ExcludeTagsRe) == 0 {
+	if len(f.excludeTags) == 0 && f.excludeTagsRe == nil {
 		return false
 	}
 
 	// If there are exclude tags, exclude if the item has any of them.
-	for _, tag := range fc.ExcludeTags {
+	for _, tag := range f.excludeTags {
 		if item.Tags[tag] {
 			return true
 		}
@@ -169,14 +188,9 @@ func (fc *FilterConfig) shouldExcludeResourceByTags(item pveInventoryItem) bool 
 
 	// If there are exclude tag regexes, exclude if the item has any matching
 	// tags.
-	if len(fc.ExcludeTagsRe) > 0 {
-		// Lazy initialization of combined regex
-		if fc.combinedExcludeTagsRe == nil {
-			fc.combinedExcludeTagsRe = combineRegexps(fc.ExcludeTagsRe)
-		}
-
+	if f.excludeTagsRe != nil {
 		for tag := range item.Tags {
-			if fc.combinedExcludeTagsRe.MatchString(tag) {
+			if f.excludeTagsRe.MatchString(tag) {
 				return true
 			}
 		}
@@ -185,9 +199,9 @@ func (fc *FilterConfig) shouldExcludeResourceByTags(item pveInventoryItem) bool 
 }
 
 // shouldIncludeResourceByCIDRs determines if a resource should be included based on CIDRs.
-func (fc *FilterConfig) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool {
+func (f *Filter) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool {
 	// If there are no include CIDRs, include everything.
-	if len(fc.IncludeCIDRs) == 0 {
+	if len(f.includeCIDRs) == 0 {
 		return true
 	}
 
@@ -199,7 +213,7 @@ func (fc *FilterConfig) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool
 	// If there are include CIDRs, include only if the item has at least one
 	// IP address within any of the CIDRs.
 	for _, ip := range item.Addrs {
-		for _, cidr := range fc.IncludeCIDRs {
+		for _, cidr := range f.includeCIDRs {
 			if cidr.Contains(ip) {
 				return true
 			}
@@ -210,9 +224,9 @@ func (fc *FilterConfig) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool
 }
 
 // shouldExcludeResourceByCIDRs determines if a resource should be excluded based on CIDRs.
-func (fc *FilterConfig) shouldExcludeResourceByCIDRs(item pveInventoryItem) bool {
+func (f *Filter) shouldExcludeResourceByCIDRs(item pveInventoryItem) bool {
 	// If there are no exclude CIDRs, don't exclude anything.
-	if len(fc.ExcludeCIDRs) == 0 {
+	if len(f.excludeCIDRs) == 0 {
 		return false
 	}
 
@@ -224,7 +238,7 @@ func (fc *FilterConfig) shouldExcludeResourceByCIDRs(item pveInventoryItem) bool
 	// If there are exclude CIDRs, exclude if the item has any IP address
 	// within any of the CIDRs.
 	for _, ip := range item.Addrs {
-		for _, cidr := range fc.ExcludeCIDRs {
+		for _, cidr := range f.excludeCIDRs {
 			if cidr.Contains(ip) {
 				return true
 			}
