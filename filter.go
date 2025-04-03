@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"strings"
 
 	"github.com/spf13/pflag"
 )
@@ -31,6 +32,10 @@ type FilterConfig struct {
 	// Resources with at least one tag matching any regex are included.
 	IncludeTagsRe []*regexp.Regexp
 
+	// combinedIncludeTagsRe is a single regex that combines all the
+	// IncludeTagsRe patterns. It is initialized lazily when needed.
+	combinedIncludeTagsRe *regexp.Regexp
+
 	// ExcludeTags are the tags that will cause resources to be excluded.
 	// This takes priority over inclusion.
 	ExcludeTags []string
@@ -39,6 +44,10 @@ type FilterConfig struct {
 	// Resources with any tag matching any regex are excluded.
 	// This takes priority over inclusion.
 	ExcludeTagsRe []*regexp.Regexp
+
+	// combinedExcludeTagsRe is a single regex that combines all the
+	// ExcludeTagsRe patterns. It is initialized lazily when needed.
+	combinedExcludeTagsRe *regexp.Regexp
 
 	// IncludeCIDRs are the network CIDRs that resources must have an IP in to be included.
 	// If empty, all resources are included (unless excluded).
@@ -58,6 +67,8 @@ func NewFilterConfigFromFlags() (*FilterConfig, error) {
 		ExcludeTags:   *filterExcludeTags,
 		ExcludeTagsRe: parsedExcludeTagsRe,
 	}
+
+	// The combined regular expressions will be initialized lazily when needed
 
 	// Parse CIDRs
 	for _, cidr := range *filterIncludeCIDRs {
@@ -126,10 +137,14 @@ func (fc *FilterConfig) shouldIncludeResourceByTags(item pveInventoryItem) bool 
 
 	// If there are include tag regexes, include only if the item has at
 	// least one matching tag.
-	// TODO: non-O(n^2) implementation
-	for _, tagRe := range fc.IncludeTagsRe {
+	if len(fc.IncludeTagsRe) > 0 {
+		// Lazy initialization of combined regex
+		if fc.combinedIncludeTagsRe == nil {
+			fc.combinedIncludeTagsRe = combineRegexps(fc.IncludeTagsRe)
+		}
+
 		for tag := range item.Tags {
-			if tagRe.MatchString(tag) {
+			if fc.combinedIncludeTagsRe.MatchString(tag) {
 				return true
 			}
 		}
@@ -154,10 +169,14 @@ func (fc *FilterConfig) shouldExcludeResourceByTags(item pveInventoryItem) bool 
 
 	// If there are exclude tag regexes, exclude if the item has any matching
 	// tags.
-	// TODO: non-O(n^2) implementation
-	for _, tagRe := range fc.ExcludeTagsRe {
+	if len(fc.ExcludeTagsRe) > 0 {
+		// Lazy initialization of combined regex
+		if fc.combinedExcludeTagsRe == nil {
+			fc.combinedExcludeTagsRe = combineRegexps(fc.ExcludeTagsRe)
+		}
+
 		for tag := range item.Tags {
-			if tagRe.MatchString(tag) {
+			if fc.combinedExcludeTagsRe.MatchString(tag) {
 				return true
 			}
 		}
@@ -212,4 +231,37 @@ func (fc *FilterConfig) shouldExcludeResourceByCIDRs(item pveInventoryItem) bool
 		}
 	}
 	return false
+}
+
+// combineRegexps combines multiple regular expressions into a single one using
+// the | operator.
+//
+// It returns nil if the input slice is empty.
+func combineRegexps(regexps []*regexp.Regexp) *regexp.Regexp {
+	if len(regexps) == 0 {
+		return nil
+	}
+
+	if len(regexps) == 1 {
+		return regexps[0]
+	}
+
+	// Extract the patterns from each regexp
+	patterns := make([]string, len(regexps))
+	for i, re := range regexps {
+		// Use the String() method to get the pattern with proper escaping
+		patterns[i] = re.String()
+	}
+
+	// Combine all patterns with the OR operator
+	combinedPattern := "(?:" + strings.Join(patterns, ")|(?:") + ")"
+
+	// Compile the combined pattern
+	combined, err := regexp.Compile(combinedPattern)
+	if err != nil {
+		// This should never happen if all input regexps are valid
+		panic(fmt.Sprintf("failed to combine regexps: %v", err))
+	}
+
+	return combined
 }

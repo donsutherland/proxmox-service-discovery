@@ -564,3 +564,69 @@ func TestFilterConfig_ShouldExcludeResourceByCIDRs(t *testing.T) {
 		})
 	}
 }
+
+// TestCombineRegexps tests the combineRegexps function.
+func TestCombineRegexps(t *testing.T) {
+	tests := []struct {
+		name    string
+		regexps []*regexp.Regexp
+		inputs  []string
+		matches []bool
+	}{
+		{
+			name:    "empty list",
+			regexps: []*regexp.Regexp{},
+			inputs:  []string{"test", "abc", "xyz"},
+			matches: []bool{false, false, false},
+		},
+		{
+			name: "single regexp",
+			regexps: []*regexp.Regexp{
+				regexp.MustCompile("^test$"),
+			},
+			inputs:  []string{"test", "tester", "abc"},
+			matches: []bool{true, false, false},
+		},
+		{
+			name: "multiple regexps",
+			regexps: []*regexp.Regexp{
+				regexp.MustCompile("^test$"),
+				regexp.MustCompile("^prod-.*"),
+				regexp.MustCompile("db$"),
+			},
+			inputs:  []string{"test", "prod-eu", "mydb", "other", "prod-db"},
+			matches: []bool{true, true, true, false, true},
+		},
+		{
+			name: "regexp with special characters",
+			regexps: []*regexp.Regexp{
+				regexp.MustCompile(`\d+`),
+				regexp.MustCompile(`a|b`),
+			},
+			inputs:  []string{"123", "a", "xyz", "b5"},
+			matches: []bool{true, true, false, true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			combined := combineRegexps(tt.regexps)
+
+			// If the list is empty, combined should be nil
+			if len(tt.regexps) == 0 {
+				if combined != nil {
+					t.Errorf("expected nil for empty list, got %v", combined)
+				}
+				return
+			}
+
+			// Check that the combined regexp matches what we expect
+			for i, input := range tt.inputs {
+				actual := combined.MatchString(input)
+				if actual != tt.matches[i] {
+					t.Errorf("for input %q: got match=%v, want match=%v", input, actual, tt.matches[i])
+				}
+			}
+		})
+	}
+}
