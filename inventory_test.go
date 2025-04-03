@@ -395,7 +395,7 @@ func TestFetchInventory(t *testing.T) {
 			ID:    100,
 			Node:  "node1",
 			Type:  pveItemTypeQEMU,
-			Tags:  []string{"web", "prod"},
+			Tags:  stringBoolMap("web", "prod"),
 			Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.100")},
 		},
 		{
@@ -403,7 +403,7 @@ func TestFetchInventory(t *testing.T) {
 			ID:    102,
 			Node:  "node2",
 			Type:  pveItemTypeQEMU,
-			Tags:  []string{"app", "prod"},
+			Tags:  stringBoolMap("app", "prod"),
 			Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.102")},
 		},
 		{
@@ -411,7 +411,7 @@ func TestFetchInventory(t *testing.T) {
 			ID:    200,
 			Node:  "node1",
 			Type:  pveItemTypeLXC,
-			Tags:  []string{"cache", "prod"},
+			Tags:  stringBoolMap("cache", "prod"),
 			Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.200")},
 		},
 		{
@@ -419,7 +419,7 @@ func TestFetchInventory(t *testing.T) {
 			ID:    201,
 			Node:  "node2",
 			Type:  pveItemTypeLXC,
-			Tags:  []string{"web", "stage"},
+			Tags:  stringBoolMap("web", "stage"),
 			Addrs: []netip.Addr{netip.MustParseAddr("192.168.1.201")},
 		},
 	}

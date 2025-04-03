@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
-	"slices"
 
 	"github.com/spf13/pflag"
 )
@@ -120,7 +119,7 @@ func (fc *FilterConfig) shouldIncludeResourceByTags(item pveInventoryItem) bool 
 	// If there are include tags, include only if the item has at least one
 	// of them.
 	for _, tag := range fc.IncludeTags {
-		if slices.Contains(item.Tags, tag) {
+		if item.Tags[tag] {
 			return true
 		}
 	}
@@ -129,7 +128,7 @@ func (fc *FilterConfig) shouldIncludeResourceByTags(item pveInventoryItem) bool 
 	// least one matching tag.
 	// TODO: non-O(n^2) implementation
 	for _, tagRe := range fc.IncludeTagsRe {
-		for _, tag := range item.Tags {
+		for tag := range item.Tags {
 			if tagRe.MatchString(tag) {
 				return true
 			}
@@ -148,7 +147,7 @@ func (fc *FilterConfig) shouldExcludeResourceByTags(item pveInventoryItem) bool 
 
 	// If there are exclude tags, exclude if the item has any of them.
 	for _, tag := range fc.ExcludeTags {
-		if slices.Contains(item.Tags, tag) {
+		if item.Tags[tag] {
 			return true
 		}
 	}
@@ -157,7 +156,7 @@ func (fc *FilterConfig) shouldExcludeResourceByTags(item pveInventoryItem) bool 
 	// tags.
 	// TODO: non-O(n^2) implementation
 	for _, tagRe := range fc.ExcludeTagsRe {
-		for _, tag := range item.Tags {
+		for tag := range item.Tags {
 			if tagRe.MatchString(tag) {
 				return true
 			}

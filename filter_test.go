@@ -12,7 +12,7 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 		{
 			Name: "vm1",
 			Type: pveItemTypeQEMU,
-			Tags: []string{"prod", "web"},
+			Tags: stringBoolMap("prod", "web"),
 			Addrs: []netip.Addr{
 				netip.MustParseAddr("192.168.1.10"),
 				netip.MustParseAddr("2001:db8::1"),
@@ -21,7 +21,7 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 		{
 			Name: "vm2",
 			Type: pveItemTypeLXC,
-			Tags: []string{"prod", "db"},
+			Tags: stringBoolMap("prod", "db"),
 			Addrs: []netip.Addr{
 				netip.MustParseAddr("192.168.1.20"),
 			},
@@ -29,7 +29,7 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 		{
 			Name: "vm3",
 			Type: pveItemTypeQEMU,
-			Tags: []string{"dev", "web"},
+			Tags: stringBoolMap("dev", "web"),
 			Addrs: []netip.Addr{
 				netip.MustParseAddr("10.0.0.5"),
 			},
@@ -37,7 +37,7 @@ func TestFilterConfig_FilterResources(t *testing.T) {
 		{
 			Name:  "vm4",
 			Type:  pveItemTypeQEMU,
-			Tags:  []string{"test"},
+			Tags:  stringBoolMap("test"),
 			Addrs: []netip.Addr{}, // No IP addresses
 		},
 	}
@@ -236,7 +236,7 @@ func TestFilterConfig_ShouldIncludeResourceByTags(t *testing.T) {
 			name:   "no include filters - should include",
 			config: FilterConfig{},
 			item: pveInventoryItem{
-				Tags: []string{"test"},
+				Tags: stringBoolMap("test"),
 			},
 			want: true,
 		},
@@ -246,7 +246,7 @@ func TestFilterConfig_ShouldIncludeResourceByTags(t *testing.T) {
 				IncludeTags: []string{"prod"},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"prod", "web"},
+				Tags: stringBoolMap("prod", "web"),
 			},
 			want: true,
 		},
@@ -256,7 +256,7 @@ func TestFilterConfig_ShouldIncludeResourceByTags(t *testing.T) {
 				IncludeTags: []string{"prod"},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"dev", "web"},
+				Tags: stringBoolMap("dev", "web"),
 			},
 			want: false,
 		},
@@ -266,7 +266,7 @@ func TestFilterConfig_ShouldIncludeResourceByTags(t *testing.T) {
 				IncludeTagsRe: []*regexp.Regexp{regexp.MustCompile("prod-.*")},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"prod-eu", "web"},
+				Tags: stringBoolMap("prod-eu", "web"),
 			},
 			want: true,
 		},
@@ -276,7 +276,7 @@ func TestFilterConfig_ShouldIncludeResourceByTags(t *testing.T) {
 				IncludeTagsRe: []*regexp.Regexp{regexp.MustCompile("prod-.*")},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"dev", "web"},
+				Tags: stringBoolMap("dev", "web"),
 			},
 			want: false,
 		},
@@ -286,7 +286,7 @@ func TestFilterConfig_ShouldIncludeResourceByTags(t *testing.T) {
 				IncludeTags: []string{"prod"},
 			},
 			item: pveInventoryItem{
-				Tags: []string{},
+				Tags: stringBoolMap(),
 			},
 			want: false,
 		},
@@ -313,7 +313,7 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 			name:   "no exclude filters - should not exclude",
 			config: FilterConfig{},
 			item: pveInventoryItem{
-				Tags: []string{"test"},
+				Tags: stringBoolMap("test"),
 			},
 			want: false,
 		},
@@ -323,7 +323,7 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 				ExcludeTags: []string{"web"},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"prod", "web"},
+				Tags: stringBoolMap("prod", "web"),
 			},
 			want: true,
 		},
@@ -333,7 +333,7 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 				ExcludeTags: []string{"web"},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"prod", "api"},
+				Tags: stringBoolMap("prod", "api"),
 			},
 			want: false,
 		},
@@ -343,7 +343,7 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 				ExcludeTagsRe: []*regexp.Regexp{regexp.MustCompile("prod-.*")},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"prod-eu", "web"},
+				Tags: stringBoolMap("prod-eu", "web"),
 			},
 			want: true,
 		},
@@ -353,7 +353,7 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 				ExcludeTagsRe: []*regexp.Regexp{regexp.MustCompile("prod-.*")},
 			},
 			item: pveInventoryItem{
-				Tags: []string{"dev", "web"},
+				Tags: stringBoolMap("dev", "web"),
 			},
 			want: false,
 		},
@@ -363,7 +363,7 @@ func TestFilterConfig_ShouldExcludeResourceByTags(t *testing.T) {
 				ExcludeTags: []string{"web"},
 			},
 			item: pveInventoryItem{
-				Tags: []string{},
+				Tags: stringBoolMap(),
 			},
 			want: false,
 		},

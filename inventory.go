@@ -39,8 +39,7 @@ type pveInventoryItem struct {
 	// Type is the type of the resource.
 	Type pveItemType
 	// Tags are the tags associated with the resource.
-	// TODO: map[string]bool?
-	Tags []string
+	Tags map[string]bool
 	// Addrs are the IP addresses associated with the resource.
 	Addrs []netip.Addr
 }
@@ -145,7 +144,7 @@ func (s *server) fetchInventoryFromNode(ctx context.Context, node string) (inven
 			ID:    vm.VMID,
 			Node:  node,
 			Type:  pveItemTypeQEMU,
-			Tags:  strings.Split(vm.Tags, ";"),
+			Tags:  stringBoolMap(strings.Split(vm.Tags, ";")...),
 			Addrs: addrs,
 		})
 	}
@@ -176,11 +175,19 @@ func (s *server) fetchInventoryFromNode(ctx context.Context, node string) (inven
 			ID:    lxc.VMID,
 			Node:  node,
 			Type:  pveItemTypeLXC,
-			Tags:  strings.Split(lxc.Tags, ";"),
+			Tags:  stringBoolMap(strings.Split(lxc.Tags, ";")...),
 			Addrs: addrs,
 		})
 	}
 	return inventory, stats, nil
+}
+
+func stringBoolMap(from ...string) map[string]bool {
+	m := make(map[string]bool, len(from))
+	for _, s := range from {
+		m[s] = true
+	}
+	return m
 }
 
 func (s *server) fetchQEMUAddrs(ctx context.Context, node string, vmID int) ([]netip.Addr, error) {
