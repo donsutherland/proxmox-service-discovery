@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"regexp"
 	"slices"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/oklog/run"
@@ -140,6 +141,7 @@ const homeTmplStr = `
         <li>DNS Zone: {{.Server.DnsZone}}</li>
         <li>Proxmox Host: {{.Server.Host}}</li>
         <li>Records: {{.RecordCount}} DNS entries</li>
+        <li>Last Updated: {{if .LastUpdated.IsZero}}Never{{else}}{{.LastUpdated.Format "2006-01-02 15:04:05"}}{{end}}</li>
         <li>Version: {{.Version}}</li>
     </ul>
 {{end}}
@@ -307,6 +309,7 @@ type homeTemplateData struct {
 	baseTemplateData
 	Server      serverInfo
 	RecordCount int
+	LastUpdated time.Time
 }
 
 // configTemplateData represents the data for the configuration page template
@@ -357,6 +360,7 @@ func (s *server) handleDebugRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	recordCount := len(s.records)
+	lastUpdated := s.lastInventoryUpdate
 	s.mu.RUnlock()
 
 	data := homeTemplateData{
@@ -371,6 +375,7 @@ func (s *server) handleDebugRoot(w http.ResponseWriter, r *http.Request) {
 			DebugAddr: s.debugAddr,
 		},
 		RecordCount: recordCount,
+		LastUpdated: lastUpdated,
 	}
 
 	w.Header().Set("Content-Type", "text/html")

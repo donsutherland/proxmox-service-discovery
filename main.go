@@ -214,8 +214,9 @@ type server struct {
 	cachedErr       error
 
 	// DNS state
-	mu      sync.RWMutex
-	records map[string]record
+	mu                  sync.RWMutex
+	records             map[string]record
+	lastInventoryUpdate time.Time // time of last successful inventory update
 }
 
 // Options contains the options for creating a [server].

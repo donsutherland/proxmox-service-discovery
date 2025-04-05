@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/creachadair/taskgroup"
 
@@ -132,7 +133,12 @@ func (s *server) fetchInventory(ctx context.Context) (pveInventory, error) {
 		}
 	}
 
-	return inventory, err
+	// Update lastInventoryUpdate time now that we've fetched the
+	// inventory.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastInventoryUpdate = time.Now()
+	return inventory, nil
 }
 
 func (s *server) loadCache() (inventory pveInventory, err error) {
@@ -160,6 +166,14 @@ func (s *server) loadCache() (inventory pveInventory, err error) {
 	if want := s.inventoryCacheKey(); inventory.CacheKey != want {
 		return zero, fmt.Errorf("cache key %q does not match expected key %q", inventory.CacheKey, want)
 	}
+
+	// Update the lastInventoryUpdate time to the file's modification time
+	if fileInfo, statErr := os.Stat(s.cachePath); statErr == nil {
+		s.mu.Lock()
+		s.lastInventoryUpdate = fileInfo.ModTime()
+		s.mu.Unlock()
+	}
+
 	return inventory, nil
 }
 
