@@ -295,43 +295,43 @@ var (
 
 // Data structures for templates
 
-// BaseTemplateData represents the common data for all templates
-type BaseTemplateData struct {
+// baseTemplateData represents the common data for all templates
+type baseTemplateData struct {
 	Title   string
 	Version string
 	IsDev   bool
 }
 
-// HomeTemplateData represents the data for the home page template
-type HomeTemplateData struct {
-	BaseTemplateData
-	Server      ServerInfo
+// homeTemplateData represents the data for the home page template
+type homeTemplateData struct {
+	baseTemplateData
+	Server      serverInfo
 	RecordCount int
 }
 
-// ConfigTemplateData represents the data for the configuration page template
-type ConfigTemplateData struct {
-	BaseTemplateData
-	Server       ServerInfo
-	FilterConfig FilterConfigInfo
+// configTemplateData represents the data for the configuration page template
+type configTemplateData struct {
+	baseTemplateData
+	Server       serverInfo
+	FilterConfig filterConfigInfo
 }
 
-// DNSTemplateData represents the data for the DNS records page template
-type DNSTemplateData struct {
-	BaseTemplateData
-	Records []DNSRecordInfo
+// dnsTemplateData represents the data for the DNS records page template
+type dnsTemplateData struct {
+	baseTemplateData
+	Records []dnsRecordInfo
 	NoAddrs []string
 }
 
-// ServerInfo represents server information for templates
-type ServerInfo struct {
+// serverInfo represents server information for templates
+type serverInfo struct {
 	Host      string
 	DnsZone   string
 	DebugAddr string
 }
 
-// FilterConfigInfo represents filter configuration for templates
-type FilterConfigInfo struct {
+// filterConfigInfo represents filter configuration for templates
+type filterConfigInfo struct {
 	Type          string
 	IncludeTags   []string
 	IncludeTagsRe []*regexp.Regexp
@@ -341,8 +341,8 @@ type FilterConfigInfo struct {
 	ExcludeCIDRs  []netip.Prefix
 }
 
-// DNSRecordInfo represents a DNS record for templates
-type DNSRecordInfo struct {
+// dnsRecordInfo represents a DNS record for templates
+type dnsRecordInfo struct {
 	FQDN      string
 	Type      string
 	Addresses []string
@@ -359,13 +359,13 @@ func (s *server) handleDebugRoot(w http.ResponseWriter, r *http.Request) {
 	recordCount := len(s.records)
 	s.mu.RUnlock()
 
-	data := HomeTemplateData{
-		BaseTemplateData: BaseTemplateData{
+	data := homeTemplateData{
+		baseTemplateData: baseTemplateData{
 			Title:   "Debug Server",
 			Version: buildtags.Version,
 			IsDev:   buildtags.IsDev,
 		},
-		Server: ServerInfo{
+		Server: serverInfo{
 			Host:      s.host,
 			DnsZone:   s.dnsZone,
 			DebugAddr: s.debugAddr,
@@ -383,18 +383,18 @@ func (s *server) handleDebugRoot(w http.ResponseWriter, r *http.Request) {
 
 // handleDebugConfig handles the configuration debug page
 func (s *server) handleDebugConfig(w http.ResponseWriter, r *http.Request) {
-	data := ConfigTemplateData{
-		BaseTemplateData: BaseTemplateData{
+	data := configTemplateData{
+		baseTemplateData: baseTemplateData{
 			Title:   "Configuration",
 			Version: buildtags.Version,
 			IsDev:   buildtags.IsDev,
 		},
-		Server: ServerInfo{
+		Server: serverInfo{
 			Host:      s.host,
 			DnsZone:   s.dnsZone,
 			DebugAddr: s.debugAddr,
 		},
-		FilterConfig: FilterConfigInfo{
+		FilterConfig: filterConfigInfo{
 			Type:          s.fc.Type,
 			IncludeTags:   s.fc.IncludeTags,
 			IncludeTagsRe: s.fc.IncludeTagsRe,
@@ -422,7 +422,7 @@ func (s *server) handleDebugDNS(w http.ResponseWriter, r *http.Request) {
 	fqdns := slices.Collect(maps.Keys(s.records))
 	slices.Sort(fqdns)
 
-	var records []DNSRecordInfo
+	var records []dnsRecordInfo
 	for _, fqdn := range fqdns {
 		rec := s.records[fqdn]
 
@@ -450,7 +450,7 @@ func (s *server) handleDebugDNS(w http.ResponseWriter, r *http.Request) {
 
 		// Create record info for each record type
 		for recordType, addresses := range recordTypes {
-			records = append(records, DNSRecordInfo{
+			records = append(records, dnsRecordInfo{
 				FQDN:      fqdn,
 				Type:      recordType,
 				Addresses: addresses,
@@ -459,7 +459,7 @@ func (s *server) handleDebugDNS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sort records to ensure we have a deterministic order
-	slices.SortFunc(records, func(a, b DNSRecordInfo) int {
+	slices.SortFunc(records, func(a, b dnsRecordInfo) int {
 		return cmp.Or(
 			cmp.Compare(a.FQDN, b.FQDN),
 			cmp.Compare(a.Type, b.Type),
@@ -475,8 +475,8 @@ func (s *server) handleDebugDNS(w http.ResponseWriter, r *http.Request) {
 	noAddrs := slices.Clone(s.noAddrs)
 	slices.Sort(noAddrs)
 
-	data := DNSTemplateData{
-		BaseTemplateData: BaseTemplateData{
+	data := dnsTemplateData{
+		baseTemplateData: baseTemplateData{
 			Title:   "DNS Records",
 			Version: buildtags.Version,
 			IsDev:   buildtags.IsDev,
@@ -509,7 +509,7 @@ func (s *server) handleDebugVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := BaseTemplateData{
+	data := baseTemplateData{
 		Title:   "Version Information",
 		Version: buildtags.Version,
 		IsDev:   buildtags.IsDev,

@@ -137,8 +137,8 @@ func main() {
 	}
 
 	// Fetch DNS records at process start so we have a warm cache.
+	logger.Info("performing initial DNS record fetch")
 	if err := server.updateDNSRecords(ctx); err != nil {
-		// TODO: fatal or not? configurable?
 		pvelog.Fatal(logger, "error fetching initial DNS records", pvelog.Error(err))
 	}
 
