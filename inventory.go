@@ -307,7 +307,7 @@ func (s *server) fetchInventoryFromNode(ctx context.Context, node string) (inven
 	if err != nil {
 		return inventory, stats, fmt.Errorf("fetching LXCs for node %q: %w", node, err)
 	}
-	stats.NumLXCs = len(vms)
+	stats.NumLXCs = len(lxcs)
 
 	// Add the LXCs to the inventory
 	for _, lxc := range lxcs {
