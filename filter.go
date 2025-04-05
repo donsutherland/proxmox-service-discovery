@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/pflag"
+	"go4.org/netipx"
 )
 
 var (
@@ -58,11 +59,18 @@ type Filter struct {
 	excludeTags   []string
 	excludeTagsRe *regexp.Regexp // combined regex for all ExcludeTagsRe
 
-	// TODO: use a BART table or something if we see this becoming a
-	// performance bottleneck; I assume that most of the time, the
-	// number of CIDRs will be small.
-	includeCIDRs []netip.Prefix
-	excludeCIDRs []netip.Prefix
+	// We can use a BART table or something if we see this becoming a
+	// performance bottleneck; I assume that most of the time, the number
+	// of CIDRs will be small, and this does a binary search.
+	//
+	// If we need to switch to another package, here's two options:
+	//	- https://github.com/aromatt/netipds
+	//	- https://github.com/gaissmai/bart
+	//
+	// In the vanishingly unlikely event that we need to care about
+	// benchmarks, look at: https://github.com/gaissmai/iprbench
+	includeCIDRs *netipx.IPSet
+	excludeCIDRs *netipx.IPSet
 }
 
 // NewFilterConfigFromFlags creates a filter configuration from the global command line flags.
@@ -98,11 +106,33 @@ func NewFilterConfigFromFlags() (*FilterConfig, error) {
 // NewFilter creates a new filter based on the provided configuration.
 func NewFilter(fc *FilterConfig) (*Filter, error) {
 	f := &Filter{
-		typeFilter:   fc.Type,
-		includeTags:  fc.IncludeTags,
-		excludeTags:  fc.ExcludeTags,
-		includeCIDRs: fc.IncludeCIDRs,
-		excludeCIDRs: fc.ExcludeCIDRs,
+		typeFilter:  fc.Type,
+		includeTags: fc.IncludeTags,
+		excludeTags: fc.ExcludeTags,
+	}
+
+	// Create an IPSet from the include/exclude CIDRs
+	if len(fc.IncludeCIDRs) > 0 {
+		var builder netipx.IPSetBuilder
+		for _, cidr := range fc.IncludeCIDRs {
+			builder.AddPrefix(cidr)
+		}
+		set, err := builder.IPSet()
+		if err != nil {
+			return nil, fmt.Errorf("creating include CIDR set: %w", err)
+		}
+		f.includeCIDRs = set
+	}
+	if len(fc.ExcludeCIDRs) > 0 {
+		var builder netipx.IPSetBuilder
+		for _, cidr := range fc.ExcludeCIDRs {
+			builder.AddPrefix(cidr)
+		}
+		set, err := builder.IPSet()
+		if err != nil {
+			return nil, fmt.Errorf("creating exclude CIDR set: %w", err)
+		}
+		f.excludeCIDRs = set
 	}
 	// Combine the IncludeTagsRe and ExcludeTagsRe into a single regex
 	if len(fc.IncludeTagsRe) > 0 {
@@ -201,7 +231,7 @@ func (f *Filter) shouldExcludeResourceByTags(item pveInventoryItem) bool {
 // shouldIncludeResourceByCIDRs determines if a resource should be included based on CIDRs.
 func (f *Filter) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool {
 	// If there are no include CIDRs, include everything.
-	if len(f.includeCIDRs) == 0 {
+	if f.includeCIDRs == nil {
 		return true
 	}
 
@@ -213,10 +243,8 @@ func (f *Filter) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool {
 	// If there are include CIDRs, include only if the item has at least one
 	// IP address within any of the CIDRs.
 	for _, ip := range item.Addrs {
-		for _, cidr := range f.includeCIDRs {
-			if cidr.Contains(ip) {
-				return true
-			}
+		if f.includeCIDRs.Contains(ip) {
+			return true
 		}
 	}
 
@@ -226,7 +254,7 @@ func (f *Filter) shouldIncludeResourceByCIDRs(item pveInventoryItem) bool {
 // shouldExcludeResourceByCIDRs determines if a resource should be excluded based on CIDRs.
 func (f *Filter) shouldExcludeResourceByCIDRs(item pveInventoryItem) bool {
 	// If there are no exclude CIDRs, don't exclude anything.
-	if len(f.excludeCIDRs) == 0 {
+	if f.excludeCIDRs == nil {
 		return false
 	}
 
@@ -238,10 +266,8 @@ func (f *Filter) shouldExcludeResourceByCIDRs(item pveInventoryItem) bool {
 	// If there are exclude CIDRs, exclude if the item has any IP address
 	// within any of the CIDRs.
 	for _, ip := range item.Addrs {
-		for _, cidr := range f.excludeCIDRs {
-			if cidr.Contains(ip) {
-				return true
-			}
+		if f.excludeCIDRs.Contains(ip) {
+			return true
 		}
 	}
 	return false

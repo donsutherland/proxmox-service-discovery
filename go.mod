@@ -7,6 +7,7 @@ require (
 	github.com/miekg/dns v1.1.64
 	github.com/oklog/run v1.1.0
 	github.com/spf13/pflag v1.0.6
+	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 )
 
 require (
