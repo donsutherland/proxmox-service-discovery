@@ -32,6 +32,9 @@ var (
 	udp  = pflag.Bool("udp", true, "enable UDP listener")
 	tcp  = pflag.Bool("tcp", true, "enable TCP listener")
 
+	// Cache configuration
+	cachePath = pflag.String("cache-path", "", "path to cache file (disabled if empty)")
+
 	// Debug HTTP server configuration
 	debugAddr = pflag.String("debug-addr", "", "address to listen on for HTTP debug server (disabled if empty)")
 
@@ -100,7 +103,14 @@ func main() {
 		}
 	}
 	if err := auth.Authenticate(context.Background()); err != nil {
-		pvelog.Fatal(logger, "error authenticating with Proxmox", pvelog.Error(err))
+		// Don't exit if we hvae a cache file; we can still serve
+		// whatever is in the cache.
+		//
+		// TODO: make this fatal if we get a definitive "wrong
+		// password"/"bad api token" error
+		if *cachePath == "" {
+			pvelog.Fatal(logger, "error authenticating with Proxmox", pvelog.Error(err))
+		}
 	}
 
 	// Periodically call the auth provider's update function.
@@ -112,7 +122,13 @@ func main() {
 		return nil
 	}))
 
-	server, err := newServer(*proxmoxHost, *dnsZone, auth, *debugAddr)
+	server, err := newServer(Options{
+		Host:      *proxmoxHost,
+		DNSZone:   *dnsZone,
+		Auth:      auth,
+		DebugAddr: *debugAddr,
+		CachePath: *cachePath,
+	})
 	if err != nil {
 		pvelog.Fatal(logger, "error creating server", pvelog.Error(err))
 	}
@@ -183,6 +199,7 @@ type server struct {
 	fc        *FilterConfig
 	filt      *Filter
 	debugAddr string
+	cachePath string
 
 	dnsMux *dns.ServeMux // immutable
 
@@ -191,15 +208,42 @@ type server struct {
 	debugStarted bool           // whether debug server was started
 	noAddrs      []string       // list of FQDNs that we don't have addresses for
 
+	// cacheLoadOnce is used to ensure that we only load the cache once.
+	cacheLoadOnce   sync.Once
+	cachedInventory *pveInventory
+	cachedErr       error
+
 	// DNS state
 	mu      sync.RWMutex
 	records map[string]record
 }
 
+// Options contains the options for creating a [server].
+//
+// All fields are required unless otherwise noted.
+type Options struct {
+	// Host is the Proxmox host to connect to.
+	Host string
+	// DNSZone is the DNS zone to serve records for.
+	DNSZone string
+	// Auth is the authentication provider to use.
+	Auth proxmoxAuthProvider
+	// DebugAddr is the address to listen on for the debug HTTP server.
+	//
+	// This field is optional. If empty, no debug server will be started.
+	DebugAddr string
+	// CachePath is the path to the cache file. If provided, the server
+	// will load records from the cache file on startup, allowing it to
+	// start even if there is an error fetching the inventory from Proxmox.
+	//
+	// This field is optional. If empty, no cache will be used.
+	CachePath string
+}
+
 // newServer creates a new server instance with the given configuration
-func newServer(host, dnsZone string, auth proxmoxAuthProvider, debugAddr string) (*server, error) {
-	if !strings.HasSuffix(dnsZone, ".") {
-		dnsZone += "."
+func newServer(opts Options) (*server, error) {
+	if !strings.HasSuffix(opts.DNSZone, ".") {
+		opts.DNSZone += "."
 	}
 
 	fc, err := NewFilterConfigFromFlags()
@@ -212,21 +256,22 @@ func newServer(host, dnsZone string, auth proxmoxAuthProvider, debugAddr string)
 	}
 
 	s := &server{
-		host:      host,
-		dnsZone:   dnsZone,
-		auth:      auth,
-		client:    newDefaultProxmoxClient(host, auth),
+		host:      opts.Host,
+		dnsZone:   opts.DNSZone,
+		auth:      opts.Auth,
+		client:    newDefaultProxmoxClient(opts.Host, opts.Auth),
 		fc:        fc,
 		filt:      filt,
 		dnsMux:    dns.NewServeMux(),
-		debugAddr: debugAddr,
+		debugAddr: opts.DebugAddr,
+		cachePath: opts.CachePath,
 	}
 
 	// Initialize the DNS request handler
-	s.dnsMux.HandleFunc(dnsZone, s.handleDNSRequest)
+	s.dnsMux.HandleFunc(opts.DNSZone, s.handleDNSRequest)
 
 	// Initialize debug HTTP server if address is provided
-	if debugAddr != "" {
+	if opts.DebugAddr != "" {
 		s.debugMux = http.NewServeMux()
 		s.setupDebugHandlers()
 	}

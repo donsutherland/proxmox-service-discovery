@@ -78,6 +78,8 @@ go build
 - `--tcp`: Enable TCP listener (default: true)
 - `--debug-addr`: Address for HTTP debug interface (e.g., `:8080`)
 - `--verbose`: Enable verbose logging
+- `--cache-path`: Path to cache file; if set, the program will save its state
+  to this file and load it on startup if the initial fetch from Proxmox fails.
 
 ### Filtering Options
 

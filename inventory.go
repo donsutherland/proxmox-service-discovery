@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -13,8 +17,20 @@ import (
 	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
 )
 
+const (
+	// currentCacheVersion is the version of the cache file format.
+	currentCacheVersion = 1
+)
+
 // pveInventory is a summary of the state of the Proxmox cluster.
 type pveInventory struct {
+	// Version is the version of the inventory, used to determine if a
+	// cached inventory is compatible with the current version of the code.
+	Version int
+	// CacheKey is an (opaque) key used to identify the host/cluster that
+	// this inventory belongs to. This is used to ensure that the cache
+	// file is not accidentally shared between different clusters.
+	CacheKey string
 	// NodeNames is the list of (host) node names in the cluster.
 	NodeNames []string
 	// NodeStats is a summary of the inventory about each node.
@@ -63,7 +79,130 @@ func (t pveItemType) String() string {
 	}
 }
 
-func (s *server) fetchInventory(ctx context.Context) (inventory pveInventory, _ error) {
+func (s *server) inventoryCacheKey() string {
+	// For now, just hash the hostname.
+	//
+	// TODO: user/password?
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\n", s.host)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (s *server) fetchInventory(ctx context.Context) (pveInventory, error) {
+	// Start by fetching the list of nodes from the Proxmox API; if this
+	// succeeds, then we continue.
+	inventory, err := s.fetchInventoryFromProxmox(ctx)
+	if err != nil {
+		// If we have a cache and this is the first time we're trying to
+		// fetch inventory, try loading it from the cache file.
+		//
+		// We only do this once to ensure that we're not loading the cache,
+		// fetching an updated inventory from Proxmox, and then
+		// re-loading the old and out-of-date cache again if the
+		// Proxmox call fails.
+		if s.cachePath != "" {
+			var (
+				loaded   bool
+				cacheErr error
+			)
+			s.cacheLoadOnce.Do(func() {
+				loaded = true
+				inventory, cacheErr = s.loadCache()
+				if cacheErr != nil {
+					logger.Error("error loading inventory from cache", pvelog.Error(cacheErr))
+				}
+			})
+			if loaded && cacheErr == nil {
+				logger.Debug("loaded inventory from cache",
+					slog.String("original_error", err.Error()),
+				)
+				return inventory, nil
+			}
+		}
+
+		// If we don't have a cache, return the error.
+		return inventory, fmt.Errorf("fetching inventory from Proxmox: %w", err)
+	}
+
+	// On success, save the inventory to the cache.
+	if s.cachePath != "" {
+		if err := s.saveCache(inventory); err != nil {
+			logger.Error("error saving inventory to cache", pvelog.Error(err))
+			// continue; non-fatal
+		}
+	}
+
+	return inventory, err
+}
+
+func (s *server) loadCache() (inventory pveInventory, err error) {
+	if s.cachePath == "" {
+		return inventory, nil
+	}
+
+	// Read the cache file and unmarshal it into the inventory struct.
+	var zero pveInventory
+	data, err := os.ReadFile(s.cachePath)
+	if err != nil {
+		return zero, fmt.Errorf("reading cache file: %w", err)
+	}
+
+	if err := json.Unmarshal(data, &inventory); err != nil {
+		return zero, fmt.Errorf("unmarshalling cache file: %w", err)
+	}
+
+	// Check that the cache version is compatible with the current version.
+	if inventory.Version != currentCacheVersion {
+		return zero, fmt.Errorf("cache version %d is incompatible with current version %d", inventory.Version, currentCacheVersion)
+	}
+
+	// Check that the cache key matches.
+	if want := s.inventoryCacheKey(); inventory.CacheKey != want {
+		return zero, fmt.Errorf("cache key %q does not match expected key %q", inventory.CacheKey, want)
+	}
+	return inventory, nil
+}
+
+func (s *server) saveCache(inventory pveInventory) error {
+	if s.cachePath == "" {
+		return nil
+	}
+
+	// Update the version of the inventory to the current version.
+	inventory.Version = currentCacheVersion
+
+	// Set cache key.
+	inventory.CacheKey = s.inventoryCacheKey()
+
+	// JSON-marshal the inventory, write it to a temporary file in the same
+	// directory, and then atomically rename it.
+	data, err := json.Marshal(inventory)
+	if err != nil {
+		return fmt.Errorf("marshalling inventory to JSON: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(s.cachePath), "pve-inventory-*.json")
+	if err != nil {
+		return fmt.Errorf("creating temporary file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("writing temporary file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("closing temporary file: %w", err)
+	}
+
+	if err := os.Rename(tmpFile.Name(), s.cachePath); err != nil {
+		return fmt.Errorf("renaming temporary file: %w", err)
+	}
+
+	logger.Info("saved inventory to cache", slog.String("path", s.cachePath))
+	return nil
+}
+
+func (s *server) fetchInventoryFromProxmox(ctx context.Context) (inventory pveInventory, _ error) {
 	// Start by fetching the list of nodes from the Proxmox API
 	nodes, err := s.client.GetNodes(ctx)
 	if err != nil {
