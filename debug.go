@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/andrew-d/proxmox-service-discovery/internal/buildtags"
+	"github.com/andrew-d/proxmox-service-discovery/internal/rghandlers"
 )
 
 // setupDebugHandlers sets up the HTTP debug server handlers
@@ -50,7 +51,7 @@ func (s *server) StartDebugServer(rg *run.Group) {
 	}
 
 	logger.Info("starting HTTP debug server", "addr", s.debugAddr)
-	rg.Add(HTTPServerHandler(debugServer))
+	rg.Add(rghandlers.HTTPServer(debugServer))
 	s.debugStarted = true
 }
 

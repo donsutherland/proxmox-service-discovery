@@ -21,6 +21,7 @@ import (
 	"github.com/andrew-d/proxmox-service-discovery/internal/buildtags"
 	"github.com/andrew-d/proxmox-service-discovery/internal/pveapi"
 	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
+	"github.com/andrew-d/proxmox-service-discovery/internal/rghandlers"
 )
 
 const (
@@ -121,7 +122,7 @@ func main() {
 	}
 
 	// Periodically call the auth provider's update function.
-	rg.Add(PeriodicHandler(ctx, 15*time.Minute, func(ctx context.Context) error {
+	rg.Add(rghandlers.Periodic(ctx, 15*time.Minute, func(ctx context.Context) error {
 		// NOTE: we never error here, as we don't want to stop the run.Group.
 		if err := auth.Authenticate(ctx); err != nil {
 			logger.Error("error updating Proxmox auth", pvelog.Error(err))
@@ -149,7 +150,7 @@ func main() {
 			Net:     "udp",
 			Handler: dnsHandler,
 		}
-		rg.Add(DNSServerHandler(udpServer))
+		rg.Add(rghandlers.DNSServer(udpServer))
 	}
 	if *tcp {
 		tcpServer := &dns.Server{
@@ -157,7 +158,7 @@ func main() {
 			Net:     "tcp",
 			Handler: dnsHandler,
 		}
-		rg.Add(DNSServerHandler(tcpServer))
+		rg.Add(rghandlers.DNSServer(tcpServer))
 	}
 
 	// Fetch DNS records at process start so we have a warm cache.
@@ -167,7 +168,7 @@ func main() {
 	}
 
 	// Periodically update the DNS records.
-	rg.Add(PeriodicHandler(ctx, 1*time.Minute, func(ctx context.Context) error {
+	rg.Add(rghandlers.Periodic(ctx, 1*time.Minute, func(ctx context.Context) error {
 		// NOTE: we never error here, as we don't want to stop the
 		// run.Group on failure.
 		if err := server.updateDNSRecords(ctx); err != nil {
