@@ -14,10 +14,16 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/oklog/run"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/spf13/pflag"
 
 	"github.com/andrew-d/proxmox-service-discovery/internal/buildtags"
 	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
+)
+
+const (
+	metricsNamespace = "proxmox_service_discovery"
 )
 
 var (
@@ -135,11 +141,12 @@ func main() {
 
 	// Create the DNS server.
 	const shutdownTimeout = 5 * time.Second
+	dnsHandler := server.dnsHandler()
 	if *udp {
 		udpServer := &dns.Server{
 			Addr:    *addr,
 			Net:     "udp",
-			Handler: server.dnsMux,
+			Handler: dnsHandler,
 		}
 		rg.Add(DNSServerHandler(udpServer))
 	}
@@ -147,7 +154,7 @@ func main() {
 		tcpServer := &dns.Server{
 			Addr:    *addr,
 			Net:     "tcp",
-			Handler: server.dnsMux,
+			Handler: dnsHandler,
 		}
 		rg.Add(DNSServerHandler(tcpServer))
 	}
@@ -385,4 +392,78 @@ func (s *server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if err := w.WriteMsg(msg); err != nil {
 		logger.Error("error writing DNS response", pvelog.Error(err))
 	}
+}
+
+func (s *server) dnsHandler() dns.Handler {
+	var ret dns.Handler = s.dnsMux
+
+	// Apply middleware
+	ret = dnsMetricMiddleware{ret}
+
+	// Initialize our DNS metrics to zero.
+	for _, proto := range []string{"tcp", "udp"} {
+		for _, q := range []string{"A", "AAAA"} {
+			dnsQueryCount.WithLabelValues(proto, q).Add(0)
+		}
+	}
+
+	return ret
+}
+
+type dnsMetricMiddleware struct {
+	inner dns.Handler
+}
+
+var (
+	dnsQueryCount = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metricsNamespace,
+			Name:      "dns_query_count",
+			Help:      "Number of DNS queries received",
+		},
+		[]string{"protocol", "query_type"},
+	)
+
+	// Immediately curry these metrics so we can use them in the
+	// middleware, without paying a per-query performance penalty.
+	dnsTCPQueryCountA    = dnsQueryCount.WithLabelValues("tcp", "A")
+	dnsTCPQueryCountAAAA = dnsQueryCount.WithLabelValues("tcp", "AAAA")
+	dnsUDPQueryCountA    = dnsQueryCount.WithLabelValues("udp", "A")
+	dnsUDPQueryCountAAAA = dnsQueryCount.WithLabelValues("udp", "AAAA")
+)
+
+func (d dnsMetricMiddleware) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	isUDP := true
+	if w.RemoteAddr().Network() == "tcp" {
+		isUDP = false
+	}
+
+	for _, q := range r.Question {
+		// Fast path
+		switch {
+		case q.Qtype == dns.TypeA && isUDP:
+			dnsUDPQueryCountA.Inc()
+		case q.Qtype == dns.TypeAAAA && isUDP:
+			dnsUDPQueryCountAAAA.Inc()
+		case q.Qtype == dns.TypeA && !isUDP:
+			dnsTCPQueryCountA.Inc()
+		case q.Qtype == dns.TypeAAAA && !isUDP:
+			dnsTCPQueryCountAAAA.Inc()
+		default:
+			// Slow path: allocate and increment the correct metric.
+			ty := dns.TypeToString[q.Qtype]
+			if ty == "" {
+				ty = fmt.Sprintf("unknown_%d", q.Qtype)
+			}
+
+			var proto string
+			if isUDP {
+				proto = "udp"
+			} else {
+				proto = "tcp"
+			}
+			dnsQueryCount.WithLabelValues(proto, ty).Inc()
+		}
+	}
+	d.inner.ServeDNS(w, r)
 }

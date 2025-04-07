@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/creachadair/taskgroup"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
 )
@@ -21,6 +23,51 @@ import (
 const (
 	// currentCacheVersion is the version of the cache file format.
 	currentCacheVersion = 1
+
+	// inventorySubsystem is the Prometheus subsystem for inventory metrics.
+	inventorySubsystem = "inventory"
+)
+
+var (
+	// State of the cluster
+	nodeCountMetric = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Subsystem: inventorySubsystem,
+		Name:      "node_count",
+		Help:      "Number of nodes in the Proxmox cluster",
+	})
+	lxcCountMetric = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Subsystem: inventorySubsystem,
+		Name:      "lxc_count",
+		Help:      "Number of LXCs in the Proxmox cluster",
+	})
+	vmCountMetric = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Subsystem: inventorySubsystem,
+		Name:      "vm_count",
+		Help:      "Number of VMs in the Proxmox cluster",
+	})
+
+	// State about inventory fetches
+	lastInventoryUpdateMetric = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Subsystem: inventorySubsystem,
+		Name:      "last_inventory_update",
+		Help:      "Unix timestamp of the last inventory update",
+	})
+	inventoryFetches = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Subsystem: inventorySubsystem,
+		Name:      "fetches_total",
+		Help:      "Total number of inventory fetches",
+	})
+	inventoryFetchErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Subsystem: inventorySubsystem,
+		Name:      "fetch_errors_total",
+		Help:      "Total number of inventory fetch errors",
+	})
 )
 
 // pveInventory is a summary of the state of the Proxmox cluster.
@@ -81,10 +128,15 @@ func (t pveItemType) String() string {
 }
 
 func (s *server) inventoryCacheKey() string {
+	h := sha256.New()
+
+	// Prefix with something unique to this program so we're less likely to
+	// be confused with some other cache file.
+	h.Write([]byte("pve-inventory-cache\n"))
+
 	// For now, just hash the hostname.
 	//
 	// TODO: user/password?
-	h := sha256.New()
 	fmt.Fprintf(h, "%s\n", s.host)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
@@ -122,8 +174,21 @@ func (s *server) fetchInventory(ctx context.Context) (pveInventory, error) {
 		}
 
 		// If we don't have a cache, return the error.
+		inventoryFetchErrors.Inc()
 		return inventory, fmt.Errorf("fetching inventory from Proxmox: %w", err)
 	}
+
+	// We have a valid inventory; update metrics.
+	//
+	// TODO: do this in the "loaded from cache" path too?
+	inventoryFetches.Inc()
+	nodeCountMetric.Set(float64(len(inventory.NodeNames)))
+	lxcCountMetric.Set(float64(CountSlice(inventory.Resources, func(item pveInventoryItem) bool {
+		return item.Type == pveItemTypeLXC
+	})))
+	vmCountMetric.Set(float64(CountSlice(inventory.Resources, func(item pveInventoryItem) bool {
+		return item.Type == pveItemTypeQEMU
+	})))
 
 	// On success, save the inventory to the cache.
 	if s.cachePath != "" {
@@ -138,6 +203,7 @@ func (s *server) fetchInventory(ctx context.Context) (pveInventory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastInventoryUpdate = time.Now()
+	lastInventoryUpdateMetric.Set(float64(s.lastInventoryUpdate.Unix()))
 	return inventory, nil
 }
 

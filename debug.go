@@ -12,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/oklog/run"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/andrew-d/proxmox-service-discovery/internal/buildtags"
 )
@@ -32,6 +33,9 @@ func (s *server) setupDebugHandlers() {
 
 	// Version endpoint
 	s.debugMux.HandleFunc("/version", s.handleDebugVersion)
+
+	// Prometheus metrics
+	s.debugMux.Handle("/metrics", promhttp.Handler())
 }
 
 // StartDebugServer starts the HTTP debug server if configured
@@ -121,6 +125,7 @@ const baseTmplStr = `
             <a href="/">Home</a>
             <a href="/config">Configuration</a>
             <a href="/dns">DNS Records</a>
+            <a href="/metrics">Metrics</a>
             <a href="/health">Health Check</a>
             <a href="/version">Version</a>
         </nav>
