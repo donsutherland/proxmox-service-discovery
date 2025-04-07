@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -21,6 +22,17 @@ type proxmoxAuthProvider interface {
 	// UpdateRequest should be called before making a request to the Proxmox
 	// API to ensure the request is authenticated.
 	UpdateRequest(r *http.Request)
+
+	// WriteCacheKey is called with an arbitrary [io.Writer], and should
+	// write a string that uniquely identifies the authentication provider.
+	//
+	// This is used to determine if the authentication provider has changed
+	// and the cache should be invalidated.
+	//
+	// No sensitive information should be written, as there is no guarantee
+	// that the writer is protected with e.g. a password hash or
+	// encryption.
+	WriteCacheKey(w io.Writer)
 }
 
 // proxmoxAPITokenAuthProvider is an implementation of [proxmoxAuthProvider]
@@ -38,6 +50,11 @@ func (a *proxmoxAPITokenAuthProvider) Authenticate(_ context.Context) error {
 func (a *proxmoxAPITokenAuthProvider) UpdateRequest(r *http.Request) {
 	token := fmt.Sprintf("%s!%s=%s", a.user, a.tokenID, a.secret)
 	r.Header.Set("Authorization", "PVEAPIToken="+token)
+}
+
+func (a *proxmoxAPITokenAuthProvider) WriteCacheKey(w io.Writer) {
+	// NOTE: don't include the secret in the cache key, as it is sensitive
+	fmt.Fprintf(w, "token\nuser:%s\ntoken-id:%s\n", a.user, a.tokenID)
 }
 
 // proxmoxPasswordAuthProvider is an implementation of [proxmoxAuthProvider]
@@ -128,4 +145,9 @@ func (a *proxmoxPasswordAuthProvider) UpdateRequest(r *http.Request) {
 	defer a.mu.RUnlock()
 	r.Header.Set("CSRFPreventionToken", a.csrf)
 	r.Header.Set("Cookie", "PVEAuthCookie="+a.ticket)
+}
+
+func (a *proxmoxPasswordAuthProvider) WriteCacheKey(w io.Writer) {
+	// NOTE: don't include the password in the cache key, as it is sensitive
+	fmt.Fprintf(w, "user-pass\nuser:%s\n", a.user)
 }

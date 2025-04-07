@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"reflect"
@@ -78,6 +79,10 @@ func (a *noopAuthProvider) Authenticate(ctx context.Context) error {
 
 func (a *noopAuthProvider) UpdateRequest(r *http.Request) {
 	// Do nothing
+}
+
+func (a *noopAuthProvider) WriteCacheKey(w io.Writer) {
+	fmt.Fprintf(w, "noop\n")
 }
 
 // TestFetchQEMUAddrs tests the fetchQEMUAddrs function

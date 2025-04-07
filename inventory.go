@@ -134,10 +134,16 @@ func (s *server) inventoryCacheKey() string {
 	// be confused with some other cache file.
 	h.Write([]byte("pve-inventory-cache\n"))
 
-	// For now, just hash the hostname.
-	//
-	// TODO: user/password?
+	// Hash the hostname of the cluster; this does mean that if we talk to
+	// only a single host in the cluster, we won't be able to use the cache
+	// on other hosts, but that seems like a reasonable tradeoff.
 	fmt.Fprintf(h, "%s\n", s.host)
+
+	// Hash authentication credentials; this means that if we use a
+	// different username/password we won't leak potentially sensitive
+	// information.
+	s.auth.WriteCacheKey(h)
+
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
