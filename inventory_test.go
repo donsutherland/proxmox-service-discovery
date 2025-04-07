@@ -10,58 +10,60 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/andrew-d/proxmox-service-discovery/internal/pveapi"
 )
 
 // mockProxmoxClient is a test implementation of the proxmoxClient interface
 type mockProxmoxClient struct {
-	nodes          []Node
-	qemuVMs        map[string][]QEMU                  // node -> VMs
-	lxcs           map[string][]LXC                   // node -> LXCs
-	qemuConfigs    map[string]QEMUConfig              // "node/vmid" -> config
-	qemuInterfaces map[string]AgentInterfacesResponse // "node/vmid" -> interfaces
-	lxcConfigs     map[string]LXCConfig               // "node/vmid" -> config
-	lxcInterfaces  map[string][]LXCInterface          // "node/vmid" -> interfaces
+	nodes          []pveapi.Node
+	qemuVMs        map[string][]pveapi.QEMU                  // node -> VMs
+	lxcs           map[string][]pveapi.LXC                   // node -> LXCs
+	qemuConfigs    map[string]pveapi.QEMUConfig              // "node/vmid" -> config
+	qemuInterfaces map[string]pveapi.AgentInterfacesResponse // "node/vmid" -> interfaces
+	lxcConfigs     map[string]pveapi.LXCConfig               // "node/vmid" -> config
+	lxcInterfaces  map[string][]pveapi.LXCInterface          // "node/vmid" -> interfaces
 }
 
 func newMockProxmoxClient() *mockProxmoxClient {
 	return &mockProxmoxClient{
-		qemuVMs:        make(map[string][]QEMU),
-		lxcs:           make(map[string][]LXC),
-		qemuConfigs:    make(map[string]QEMUConfig),
-		qemuInterfaces: make(map[string]AgentInterfacesResponse),
-		lxcConfigs:     make(map[string]LXCConfig),
-		lxcInterfaces:  make(map[string][]LXCInterface),
+		qemuVMs:        make(map[string][]pveapi.QEMU),
+		lxcs:           make(map[string][]pveapi.LXC),
+		qemuConfigs:    make(map[string]pveapi.QEMUConfig),
+		qemuInterfaces: make(map[string]pveapi.AgentInterfacesResponse),
+		lxcConfigs:     make(map[string]pveapi.LXCConfig),
+		lxcInterfaces:  make(map[string][]pveapi.LXCInterface),
 	}
 }
 
-func (c *mockProxmoxClient) GetNodes(ctx context.Context) ([]Node, error) {
+func (c *mockProxmoxClient) GetNodes(ctx context.Context) ([]pveapi.Node, error) {
 	return c.nodes, nil
 }
 
-func (c *mockProxmoxClient) GetQEMUVMs(ctx context.Context, node string) ([]QEMU, error) {
+func (c *mockProxmoxClient) GetQEMUVMs(ctx context.Context, node string) ([]pveapi.QEMU, error) {
 	return c.qemuVMs[node], nil
 }
 
-func (c *mockProxmoxClient) GetLXCs(ctx context.Context, node string) ([]LXC, error) {
+func (c *mockProxmoxClient) GetLXCs(ctx context.Context, node string) ([]pveapi.LXC, error) {
 	return c.lxcs[node], nil
 }
 
-func (c *mockProxmoxClient) GetQEMUConfig(ctx context.Context, node string, vmID int) (QEMUConfig, error) {
+func (c *mockProxmoxClient) GetQEMUConfig(ctx context.Context, node string, vmID int) (pveapi.QEMUConfig, error) {
 	key := nodePlusVMID(node, vmID)
 	return c.qemuConfigs[key], nil
 }
 
-func (c *mockProxmoxClient) GetQEMUInterfaces(ctx context.Context, node string, vmID int) (AgentInterfacesResponse, error) {
+func (c *mockProxmoxClient) GetQEMUInterfaces(ctx context.Context, node string, vmID int) (pveapi.AgentInterfacesResponse, error) {
 	key := nodePlusVMID(node, vmID)
 	return c.qemuInterfaces[key], nil
 }
 
-func (c *mockProxmoxClient) GetLXCConfig(ctx context.Context, node string, vmID int) (LXCConfig, error) {
+func (c *mockProxmoxClient) GetLXCConfig(ctx context.Context, node string, vmID int) (pveapi.LXCConfig, error) {
 	key := nodePlusVMID(node, vmID)
 	return c.lxcConfigs[key], nil
 }
 
-func (c *mockProxmoxClient) GetLXCInterfaces(ctx context.Context, node string, vmID int) ([]LXCInterface, error) {
+func (c *mockProxmoxClient) GetLXCInterfaces(ctx context.Context, node string, vmID int) ([]pveapi.LXCInterface, error) {
 	key := nodePlusVMID(node, vmID)
 	return c.lxcInterfaces[key], nil
 }
@@ -89,13 +91,13 @@ func (a *noopAuthProvider) WriteCacheKey(w io.Writer) {
 func TestFetchQEMUAddrs(t *testing.T) {
 	tests := []struct {
 		name        string
-		qemuConfig  QEMUConfig
-		interfaces  AgentInterfacesResponse
+		qemuConfig  pveapi.QEMUConfig
+		interfaces  pveapi.AgentInterfacesResponse
 		expectedIPs []netip.Addr
 	}{
 		{
 			name: "static_ip_in_ipconfig0", // for cloud-init
-			qemuConfig: QEMUConfig{
+			qemuConfig: pveapi.QEMUConfig{
 				IPConfig0: "ip=192.168.1.100/24,gw=192.168.1.1",
 				Net0:      "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0",
 			},
@@ -103,15 +105,15 @@ func TestFetchQEMUAddrs(t *testing.T) {
 		},
 		{
 			name: "IP_from_agent_interfaces_with_MAC_match",
-			qemuConfig: QEMUConfig{
+			qemuConfig: pveapi.QEMUConfig{
 				Net0: "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0",
 			},
-			interfaces: AgentInterfacesResponse{
-				Result: []AgentInterface{
+			interfaces: pveapi.AgentInterfacesResponse{
+				Result: []pveapi.AgentInterface{
 					{
 						Name:            "eth0",
 						HardwareAddress: "AA:BB:CC:DD:EE:FF",
-						IPAddresses: []AgentInterfaceAddress{
+						IPAddresses: []pveapi.AgentInterfaceAddress{
 							{
 								Type:    "ipv4",
 								Address: "192.168.1.101",
@@ -127,7 +129,7 @@ func TestFetchQEMUAddrs(t *testing.T) {
 					{
 						Name:            "eth1",
 						HardwareAddress: "FF:EE:DD:CC:BB:AA",
-						IPAddresses: []AgentInterfaceAddress{
+						IPAddresses: []pveapi.AgentInterfaceAddress{
 							{
 								Type:    "ipv4",
 								Address: "10.0.0.1",
@@ -144,15 +146,15 @@ func TestFetchQEMUAddrs(t *testing.T) {
 		},
 		{
 			name: "IP_from_agent_interfaces_without_MAC_match",
-			qemuConfig: QEMUConfig{
+			qemuConfig: pveapi.QEMUConfig{
 				Net0: "bridge=vmbr0", // No MAC address
 			},
-			interfaces: AgentInterfacesResponse{
-				Result: []AgentInterface{
+			interfaces: pveapi.AgentInterfacesResponse{
+				Result: []pveapi.AgentInterface{
 					{
 						Name:            "eth0",
 						HardwareAddress: "AA:BB:CC:DD:EE:FF",
-						IPAddresses: []AgentInterfaceAddress{
+						IPAddresses: []pveapi.AgentInterfaceAddress{
 							{
 								Type:    "ipv4",
 								Address: "192.168.1.101",
@@ -163,7 +165,7 @@ func TestFetchQEMUAddrs(t *testing.T) {
 					{
 						Name:            "eth1",
 						HardwareAddress: "FF:EE:DD:CC:BB:AA",
-						IPAddresses: []AgentInterfaceAddress{
+						IPAddresses: []pveapi.AgentInterfaceAddress{
 							{
 								Type:    "ipv4",
 								Address: "10.0.0.1",
@@ -173,7 +175,7 @@ func TestFetchQEMUAddrs(t *testing.T) {
 					},
 					{
 						Name: "lo",
-						IPAddresses: []AgentInterfaceAddress{
+						IPAddresses: []pveapi.AgentInterfaceAddress{
 							{
 								Type:    "ipv4",
 								Address: "127.0.0.1",
@@ -221,13 +223,13 @@ func TestFetchQEMUAddrs(t *testing.T) {
 func TestFetchLXCAddrs(t *testing.T) {
 	tests := []struct {
 		name        string
-		lxcConfig   LXCConfig
-		interfaces  []LXCInterface
+		lxcConfig   pveapi.LXCConfig
+		interfaces  []pveapi.LXCInterface
 		expectedIPs []netip.Addr
 	}{
 		{
 			name: "static_IP_in_config",
-			lxcConfig: LXCConfig{
+			lxcConfig: pveapi.LXCConfig{
 				//     name=eth0,bridge=vmbr0,firewall=1,gw=192.168.4.1,hwaddr=BC:24:11:4A:53:A4,ip=192.168.6.101/22,type=veth
 				Net0: "name=eth0,bridge=vmbr0,gw=192.168.1.1,hwaddr=AA:BB:CC:DD:EE:FF,ip=192.168.1.100/24",
 			},
@@ -235,10 +237,10 @@ func TestFetchLXCAddrs(t *testing.T) {
 		},
 		{
 			name: "DHCP_in_config,_IP_from_interfaces_with_MAC_match",
-			lxcConfig: LXCConfig{
+			lxcConfig: pveapi.LXCConfig{
 				Net0: "name=eth0,ip=dhcp,hwaddr=AA:BB:CC:DD:EE:FF",
 			},
-			interfaces: []LXCInterface{
+			interfaces: []pveapi.LXCInterface{
 				{
 					Name:            "eth0",
 					HardwareAddress: "AA:BB:CC:DD:EE:FF",
@@ -258,10 +260,10 @@ func TestFetchLXCAddrs(t *testing.T) {
 		},
 		{
 			name: "IP_from_interfaces_without_MAC_match",
-			lxcConfig: LXCConfig{
+			lxcConfig: pveapi.LXCConfig{
 				Net0: "name=eth0", // No MAC address
 			},
-			interfaces: []LXCInterface{
+			interfaces: []pveapi.LXCInterface{
 				{
 					Name:            "eth0",
 					HardwareAddress: "AA:BB:CC:DD:EE:FF",
@@ -317,43 +319,43 @@ func TestFetchInventory(t *testing.T) {
 	mockClient := newMockProxmoxClient()
 
 	// Add nodes
-	mockClient.nodes = []Node{
+	mockClient.nodes = []pveapi.Node{
 		{Node: "node1"},
 		{Node: "node2"},
 	}
 
 	// Add QEMU VMs
-	mockClient.qemuVMs["node1"] = []QEMU{
+	mockClient.qemuVMs["node1"] = []pveapi.QEMU{
 		{VMID: 100, Name: "vm1", Status: "running", Tags: "web;prod"},
 		{VMID: 101, Name: "vm2", Status: "stopped", Tags: "db;dev"}, // This one should be skipped as it's not running
 	}
-	mockClient.qemuVMs["node2"] = []QEMU{
+	mockClient.qemuVMs["node2"] = []pveapi.QEMU{
 		{VMID: 102, Name: "vm3", Status: "running", Tags: "app;prod"},
 	}
 
 	// Add LXC containers
-	mockClient.lxcs["node1"] = []LXC{
+	mockClient.lxcs["node1"] = []pveapi.LXC{
 		{VMID: 200, Name: "lxc1", Status: "running", Tags: "cache;prod"},
 	}
-	mockClient.lxcs["node2"] = []LXC{
+	mockClient.lxcs["node2"] = []pveapi.LXC{
 		{VMID: 201, Name: "lxc2", Status: "running", Tags: "web;stage"},
 		{VMID: 202, Name: "lxc3", Status: "stopped", Tags: "app;dev"}, // This one should be skipped as it's not running
 	}
 
 	// Add QEMU configs and interfaces
-	mockClient.qemuConfigs["node1/100"] = QEMUConfig{
+	mockClient.qemuConfigs["node1/100"] = pveapi.QEMUConfig{
 		IPConfig0: "ip=192.168.1.100/24,gw=192.168.1.1",
 		Net0:      "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0",
 	}
-	mockClient.qemuConfigs["node2/102"] = QEMUConfig{
+	mockClient.qemuConfigs["node2/102"] = pveapi.QEMUConfig{
 		Net0: "virtio=FF:EE:DD:CC:BB:AA,bridge=vmbr0",
 	}
-	mockClient.qemuInterfaces["node2/102"] = AgentInterfacesResponse{
-		Result: []AgentInterface{
+	mockClient.qemuInterfaces["node2/102"] = pveapi.AgentInterfacesResponse{
+		Result: []pveapi.AgentInterface{
 			{
 				Name:            "eth0",
 				HardwareAddress: "FF:EE:DD:CC:BB:AA",
-				IPAddresses: []AgentInterfaceAddress{
+				IPAddresses: []pveapi.AgentInterfaceAddress{
 					{
 						Type:    "ipv4",
 						Address: "192.168.1.102",
@@ -365,13 +367,13 @@ func TestFetchInventory(t *testing.T) {
 	}
 
 	// Add LXC configs and interfaces
-	mockClient.lxcConfigs["node1/200"] = LXCConfig{
+	mockClient.lxcConfigs["node1/200"] = pveapi.LXCConfig{
 		Net0: "name=eth0,ip=192.168.1.200/24,gw=192.168.1.1,hwaddr=AA:BB:CC:DD:EE:FF",
 	}
-	mockClient.lxcConfigs["node2/201"] = LXCConfig{
+	mockClient.lxcConfigs["node2/201"] = pveapi.LXCConfig{
 		Net0: "name=eth0,ip=dhcp,hwaddr=BB:CC:DD:EE:FF:AA",
 	}
-	mockClient.lxcInterfaces["node2/201"] = []LXCInterface{
+	mockClient.lxcInterfaces["node2/201"] = []pveapi.LXCInterface{
 		{
 			Name:            "eth0",
 			HardwareAddress: "BB:CC:DD:EE:FF:AA",

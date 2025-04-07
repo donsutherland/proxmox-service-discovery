@@ -1,4 +1,4 @@
-package main
+package pveapi
 
 import (
 	"context"
@@ -9,10 +9,10 @@ import (
 )
 
 func TestProxmoxAPITokenAuthProvider_Authenticate(t *testing.T) {
-	provider := &proxmoxAPITokenAuthProvider{
-		user:    "user@pve",
-		tokenID: "token-id",
-		secret:  "token-secret",
+	provider := &APITokenAuthProvider{
+		User:    "user@pve",
+		TokenID: "token-id",
+		Secret:  "token-secret",
 	}
 
 	// Authenticate should always return nil for token auth
@@ -23,10 +23,10 @@ func TestProxmoxAPITokenAuthProvider_Authenticate(t *testing.T) {
 }
 
 func TestProxmoxAPITokenAuthProvider_UpdateRequest(t *testing.T) {
-	provider := &proxmoxAPITokenAuthProvider{
-		user:    "user@pve",
-		tokenID: "token-id",
-		secret:  "token-secret",
+	provider := &APITokenAuthProvider{
+		User:    "user@pve",
+		TokenID: "token-id",
+		Secret:  "token-secret",
 	}
 
 	// Create a request to update
@@ -46,7 +46,7 @@ func TestProxmoxAPITokenAuthProvider_UpdateRequest(t *testing.T) {
 }
 
 func TestProxmoxPasswordAuthProvider_GetClient(t *testing.T) {
-	provider := &proxmoxPasswordAuthProvider{
+	provider := &PasswordAuthProvider{
 		proxmoxBaseURL: "https://proxmox.example.com:8006",
 		user:           "user@pve",
 		password:       "password",
@@ -105,7 +105,7 @@ func TestProxmoxPasswordAuthProvider_Authenticate(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := &proxmoxPasswordAuthProvider{
+	provider := &PasswordAuthProvider{
 		proxmoxBaseURL: server.URL,
 		user:           "user@pve",
 		password:       "password",
@@ -135,7 +135,7 @@ func TestProxmoxPasswordAuthProvider_Authenticate_Error(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := &proxmoxPasswordAuthProvider{
+	provider := &PasswordAuthProvider{
 		proxmoxBaseURL: server.URL,
 		user:           "user@pve",
 		password:       "wrong-password",
@@ -149,7 +149,7 @@ func TestProxmoxPasswordAuthProvider_Authenticate_Error(t *testing.T) {
 }
 
 func TestProxmoxPasswordAuthProvider_UpdateRequest(t *testing.T) {
-	provider := &proxmoxPasswordAuthProvider{
+	provider := &PasswordAuthProvider{
 		proxmoxBaseURL: "https://proxmox.example.com:8006",
 		user:           "user@pve",
 		password:       "password",

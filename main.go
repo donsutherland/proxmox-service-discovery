@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/andrew-d/proxmox-service-discovery/internal/buildtags"
+	"github.com/andrew-d/proxmox-service-discovery/internal/pveapi"
 	"github.com/andrew-d/proxmox-service-discovery/internal/pvelog"
 )
 
@@ -88,7 +89,7 @@ func main() {
 
 	var rg run.Group
 
-	var auth proxmoxAuthProvider
+	var auth pveapi.AuthProvider
 	switch {
 	case *proxmoxTokenID != "" && *proxmoxTokenSecret == "":
 		pvelog.Fatal(logger, "--proxmox-token-secret is required when --proxmox-token-id is set")
@@ -96,16 +97,16 @@ func main() {
 		pvelog.Fatal(logger, "--proxmox-token-id is required when --proxmox-token-secret is set")
 
 	case *proxmoxTokenID != "":
-		auth = &proxmoxAPITokenAuthProvider{
-			user:    *proxmoxUser,
-			tokenID: *proxmoxTokenID,
-			secret:  *proxmoxTokenSecret,
+		auth = &pveapi.APITokenAuthProvider{
+			User:    *proxmoxUser,
+			TokenID: *proxmoxTokenID,
+			Secret:  *proxmoxTokenSecret,
 		}
 	case *proxmoxPassword != "":
-		auth = &proxmoxPasswordAuthProvider{
-			proxmoxBaseURL: *proxmoxHost,
-			user:           *proxmoxUser,
-			password:       *proxmoxPassword,
+		var err error
+		auth, err = pveapi.NewPasswordAuthProvider(*proxmoxHost, *proxmoxUser, *proxmoxPassword)
+		if err != nil {
+			pvelog.Fatal(logger, "error creating password auth provider", pvelog.Error(err))
 		}
 	}
 	if err := auth.Authenticate(context.Background()); err != nil {
@@ -201,8 +202,8 @@ type server struct {
 	// config
 	host      string
 	dnsZone   string // with trailing dot
-	auth      proxmoxAuthProvider
-	client    proxmoxClient
+	auth      pveapi.AuthProvider
+	client    pveapi.Client
 	fc        *FilterConfig
 	filt      *Filter
 	debugAddr string
@@ -235,7 +236,7 @@ type Options struct {
 	// DNSZone is the DNS zone to serve records for.
 	DNSZone string
 	// Auth is the authentication provider to use.
-	Auth proxmoxAuthProvider
+	Auth pveapi.AuthProvider
 	// DebugAddr is the address to listen on for the debug HTTP server.
 	//
 	// This field is optional. If empty, no debug server will be started.
@@ -267,7 +268,7 @@ func newServer(opts Options) (*server, error) {
 		host:      opts.Host,
 		dnsZone:   opts.DNSZone,
 		auth:      opts.Auth,
-		client:    newDefaultProxmoxClient(opts.Host, opts.Auth),
+		client:    pveapi.NewClient(opts.Host, opts.Auth),
 		fc:        fc,
 		filt:      filt,
 		dnsMux:    dns.NewServeMux(),

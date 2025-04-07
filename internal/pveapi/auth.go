@@ -1,4 +1,4 @@
-package main
+package pveapi
 
 import (
 	"context"
@@ -12,9 +12,9 @@ import (
 	"sync"
 )
 
-// proxmoxAuthProvider is an interface for things that can authenticate with
+// AuthProvider is an interface for things that can authenticate with
 // the Proxmox API.
-type proxmoxAuthProvider interface {
+type AuthProvider interface {
 	// Authenticate should be called at creation time and every hour to
 	// obtain a valid authentication ticket for the Proxmox API.
 	Authenticate(context.Context) error
@@ -35,32 +35,32 @@ type proxmoxAuthProvider interface {
 	WriteCacheKey(w io.Writer)
 }
 
-// proxmoxAPITokenAuthProvider is an implementation of [proxmoxAuthProvider]
-// that uses a Proxmox API token for authentication.
-type proxmoxAPITokenAuthProvider struct {
-	user    string
-	tokenID string
-	secret  string
+// APITokenAuthProvider is an implementation of [AuthProvider] that uses a
+// Proxmox API token for authentication.
+type APITokenAuthProvider struct {
+	User    string
+	TokenID string
+	Secret  string
 }
 
-func (a *proxmoxAPITokenAuthProvider) Authenticate(_ context.Context) error {
+func (a *APITokenAuthProvider) Authenticate(_ context.Context) error {
 	return nil // no authentication needed
 }
 
-func (a *proxmoxAPITokenAuthProvider) UpdateRequest(r *http.Request) {
-	token := fmt.Sprintf("%s!%s=%s", a.user, a.tokenID, a.secret)
+func (a *APITokenAuthProvider) UpdateRequest(r *http.Request) {
+	token := fmt.Sprintf("%s!%s=%s", a.User, a.TokenID, a.Secret)
 	r.Header.Set("Authorization", "PVEAPIToken="+token)
 }
 
-func (a *proxmoxAPITokenAuthProvider) WriteCacheKey(w io.Writer) {
+func (a *APITokenAuthProvider) WriteCacheKey(w io.Writer) {
 	// NOTE: don't include the secret in the cache key, as it is sensitive
-	fmt.Fprintf(w, "token\nuser:%s\ntoken-id:%s\n", a.user, a.tokenID)
+	fmt.Fprintf(w, "token\nuser:%s\ntoken-id:%s\n", a.User, a.TokenID)
 }
 
-// proxmoxPasswordAuthProvider is an implementation of [proxmoxAuthProvider]
+// PasswordAuthProvider is an implementation of [proxmoxAuthProvider]
 // that uses a username and password for authentication, periodically
 // refreshing the authentication ticket.
-type proxmoxPasswordAuthProvider struct {
+type PasswordAuthProvider struct {
 	proxmoxBaseURL string // immutable; e.g. "https://proxmox.example.com:8006"
 	user           string // immutable; the user to authenticate as
 	password       string // immutable; the password to authenticate with
@@ -71,7 +71,20 @@ type proxmoxPasswordAuthProvider struct {
 	csrf   string       // the current CSRF token
 }
 
-func (a *proxmoxPasswordAuthProvider) getClient() (*http.Client, error) {
+func NewPasswordAuthProvider(proxmoxBaseURL, user, password string) (*PasswordAuthProvider, error) {
+	if _, err := url.Parse(proxmoxBaseURL); err != nil {
+		return nil, fmt.Errorf("invalid Proxmox base URL: %w", err)
+	}
+
+	// TODO: verify that the URL is valid by making a HTTP request?
+	return &PasswordAuthProvider{
+		proxmoxBaseURL: proxmoxBaseURL,
+		user:           user,
+		password:       password,
+	}, nil
+}
+
+func (a *PasswordAuthProvider) getClient() (*http.Client, error) {
 	a.mu.RLock()
 	client := a.client
 	a.mu.RUnlock()
@@ -95,7 +108,7 @@ func (a *proxmoxPasswordAuthProvider) getClient() (*http.Client, error) {
 	return a.client, nil
 }
 
-func (a *proxmoxPasswordAuthProvider) Authenticate(ctx context.Context) error {
+func (a *PasswordAuthProvider) Authenticate(ctx context.Context) error {
 	client, err := a.getClient()
 	if err != nil {
 		return err
@@ -140,14 +153,14 @@ func (a *proxmoxPasswordAuthProvider) Authenticate(ctx context.Context) error {
 	return nil
 }
 
-func (a *proxmoxPasswordAuthProvider) UpdateRequest(r *http.Request) {
+func (a *PasswordAuthProvider) UpdateRequest(r *http.Request) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	r.Header.Set("CSRFPreventionToken", a.csrf)
 	r.Header.Set("Cookie", "PVEAuthCookie="+a.ticket)
 }
 
-func (a *proxmoxPasswordAuthProvider) WriteCacheKey(w io.Writer) {
+func (a *PasswordAuthProvider) WriteCacheKey(w io.Writer) {
 	// NOTE: don't include the password in the cache key, as it is sensitive
 	fmt.Fprintf(w, "user-pass\nuser:%s\n", a.user)
 }
