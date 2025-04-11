@@ -81,6 +81,10 @@ go build
 - `--cache-path`: Path to cache file; if set, the program will save its state
   to this file and load it on startup if the initial fetch from Proxmox fails.
 
+### TLS and Connection Options
+
+- `--tls-no-verify`: Disable TLS certificate verification (⚠️ not recommended! ⚠️)
+
 ### Filtering Options
 
 - `--filter-type`: Filter by resource type (`QEMU` or `LXC`)
